@@ -54,14 +54,13 @@ fn fingerprint(root: &Path, files: &[PathBuf]) -> String {
     hash(&lines.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
-fn check_scripts(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+fn projects(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for f in files {
         for dir in f.ancestors().skip(1) {
-            let script = dir.join("scripts/check.sh");
-            if script.is_file() {
-                if !found.contains(&script) {
-                    found.push(script);
+            if dir.join("pyproject.toml").is_file() || dir.join("Cargo.toml").is_file() {
+                if !found.iter().any(|d| d == dir) {
+                    found.push(dir.to_path_buf());
                 }
                 break;
             }
@@ -71,6 +70,27 @@ fn check_scripts(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+fn commands(dir: &Path) -> Vec<&'static str> {
+    let mut cmds = Vec::new();
+    if dir.join("uv.lock").is_file() {
+        let py = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
+        if py.contains("[tool.ruff") {
+            cmds.push("uv run ruff check .");
+        }
+        if py.contains("[tool.ruff.format]") {
+            cmds.push("uv run ruff format --check .");
+        }
+        if py.contains("[tool.pyright]") {
+            cmds.push("uv run pyright");
+        }
+    }
+    if dir.join("Cargo.toml").is_file() {
+        cmds.push("cargo fmt --check");
+        cmds.push("cargo clippy -q -- -D warnings");
+    }
+    cmds
 }
 
 fn main() {
@@ -114,28 +134,36 @@ fn main() {
         return;
     }
 
+    let path = format!(
+        "{}/.cargo/bin:{}/.local/bin:{}",
+        env::var("HOME").unwrap_or_default(),
+        env::var("HOME").unwrap_or_default(),
+        env::var("PATH").unwrap_or_default()
+    );
     let mut failures = Vec::new();
-    for script in check_scripts(&root, &files) {
-        let dir = script.parent().and_then(Path::parent).unwrap_or(&root);
-        let Ok(out) = Command::new("bash")
-            .arg(&script)
-            .arg("--quick")
-            .env("TERM", "dumb")
-            .env("NO_COLOR", "1")
-            .current_dir(dir)
-            .output()
-        else {
-            continue;
-        };
-        if !out.status.success() {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let lines: Vec<&str> = text.trim().lines().collect();
-            let tail = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
-            failures.push(format!("$ bash {} --quick\n{}", script.display(), tail));
+    for dir in projects(&root, &files) {
+        for cmd in commands(&dir) {
+            let Ok(out) = Command::new("bash")
+                .args(["-c", cmd])
+                .env("PATH", &path)
+                .env("TERM", "dumb")
+                .env("NO_COLOR", "1")
+                .current_dir(&dir)
+                .output()
+            else {
+                continue;
+            };
+            if !out.status.success() {
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let lines: Vec<&str> = text.trim().lines().collect();
+                let tail = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
+                failures.push(format!("{}$ {}\n{}", dir.display(), cmd, tail));
+                break;
+            }
         }
     }
 
