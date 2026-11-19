@@ -144,7 +144,8 @@ fn main() {
         for cmd in commands(&dir) {
             let Ok(out) = Command::new("bash")
                 .args(["-c", cmd])
-                .env("PATH", &path)
+                .env("PATH", format!("{}/.venv/bin:{}", dir.display(), path))
+                .env("VIRTUAL_ENV", dir.join(".venv"))
                 .env("TERM", "dumb")
                 .env("NO_COLOR", "1")
                 .current_dir(&dir)
