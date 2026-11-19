@@ -12,13 +12,7 @@ const COMMENT_LIMIT: usize = 20;
 const DIRECTIVES: [&str; 8] = [
     "noqa", "type:", "ty:", "pragma", "fmt:", "ruff:", "pyright:", "mypy:",
 ];
-const PY_COMMENTS: &str = "import sys,tokenize
-with open(sys.argv[1],'rb') as f:
-    try:
-        for t in tokenize.tokenize(f.readline):
-            if t.type==tokenize.COMMENT: print(t.start[0],t.string,sep='\\t')
-    except (tokenize.TokenError,SyntaxError): pass
-";
+const PY_COMMENTS: &str = include_str!("comments.py");
 
 fn git(dir: &Path, args: &[&str]) -> String {
     Command::new("git")
@@ -284,7 +278,7 @@ fn main() {
                     .map(String::as_str)
                     .collect();
                 failures.push(format!(
-                    "{}$ 새로 추가된 주석 {}건\n{}\n주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다.",
+                    "{}$ 새로 추가된 주석과 파일 맨 위 설명문 {}건\n{}\n주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다. 파일 맨 위 설명문은 쓰지 않습니다. 함수와 클래스의 설명문은 써도 됩니다.",
                     dir.display(),
                     found.len(),
                     shown.join("\n")
