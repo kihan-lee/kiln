@@ -74,17 +74,16 @@ fn projects(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
 
 fn commands(dir: &Path) -> Vec<&'static str> {
     let mut cmds = Vec::new();
-    if dir.join("uv.lock").is_file() {
-        let py = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
-        if py.contains("[tool.ruff") {
-            cmds.push("uv run ruff check .");
-        }
+    let py = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
+    let installed = |tool: &str| dir.join(".venv/bin").join(tool).is_file();
+    if py.contains("[tool.ruff") && installed("ruff") {
+        cmds.push(".venv/bin/ruff check .");
         if py.contains("[tool.ruff.format]") {
-            cmds.push("uv run ruff format --check .");
+            cmds.push(".venv/bin/ruff format --check .");
         }
-        if py.contains("[tool.pyright]") {
-            cmds.push("uv run pyright");
-        }
+    }
+    if py.contains("[tool.pyright]") && installed("pyright") {
+        cmds.push(".venv/bin/pyright");
     }
     if dir.join("Cargo.toml").is_file() {
         cmds.push("cargo fmt --check");

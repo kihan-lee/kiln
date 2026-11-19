@@ -38,10 +38,12 @@
 
 | 조건 | 실행하는 명령 |
 |---|---|
-| `uv.lock`이 있고 `pyproject.toml`에 `[tool.ruff`가 있음 | `uv run ruff check .` |
-| `uv.lock`이 있고 `[tool.ruff.format]`이 있음 | `uv run ruff format --check .` |
-| `uv.lock`이 있고 `[tool.pyright]`가 있음 | `uv run pyright` |
+| `pyproject.toml`에 `[tool.ruff`가 있고 `.venv/bin/ruff`가 있음 | `.venv/bin/ruff check .` |
+| 위에 더해 `[tool.ruff.format]`이 있음 | `.venv/bin/ruff format --check .` |
+| `[tool.pyright]`가 있고 `.venv/bin/pyright`가 있음 | `.venv/bin/pyright` |
 | `Cargo.toml`이 있음 | `cargo fmt --check`, `cargo clippy -q -- -D warnings` |
+
+훅은 가상환경을 만들거나 의존성을 설치하지 않는다. `.venv`에 도구가 없으면 그 검사는 건너뛴다.
 
 어떤 검사를 빼려면 그 프로젝트의 `pyproject.toml`에서 해당 설정을 넣지 않는다.
 
