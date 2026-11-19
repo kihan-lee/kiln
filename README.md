@@ -9,8 +9,9 @@
 | 경로 | 역할 |
 |---|---|
 | `template/` | 프로젝트 틀 (uv, Hydra, pydantic, pytest, ruff, pyright, pre-commit, gitleaks, Bruno) |
-| `template/scripts/check.sh` | 표준 검사 진입점. `--quick`은 lint, 포맷, 타입만, 인자 없이 부르면 테스트까지 |
+| `template/scripts/check.sh.jinja` | 표준 검사 진입점. `--quick`은 lint, 포맷, 타입만, 인자 없이 부르면 테스트까지 |
 | `hook/` | Claude Code 훅 (Rust). 답변이 끝날 때 파일이 바뀌었으면 `scripts/check.sh --quick`을 돌린다 |
+| `scripts/check.sh` | 이 저장소 자체의 표준 검사 (훅 소스의 포맷과 린트, 틀 검증) |
 | `scripts/check-template.sh` | 틀 자체의 검증 |
 
 ## 새 프로젝트
