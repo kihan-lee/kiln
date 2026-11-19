@@ -1,6 +1,6 @@
 # dev-standard
 
-이 장비에서 만드는 프로젝트의 표준 도구. 프로젝트 틀과 Claude Code 훅을 한 저장소에서 관리한다.
+이 장비에서 만드는 프로젝트의 표준 도구. 프로젝트 템플릿과 Claude Code 훅을 한 저장소에서 관리한다.
 
 원칙: 지적을 받아 고친 것은 글(규칙 문서, 메모리)로 남기기 전에 검사로 옮긴다. 순서는 ruff 규칙이나 `banned-api`, 타입, 테스트이고, 기계로 못 잡는 것만 글로 적는다.
 
@@ -8,10 +8,10 @@
 
 | 경로 | 역할 |
 |---|---|
-| `template/` | 파이썬 프로젝트 틀 (uv, Hydra, pydantic, pytest, ruff, ty, pre-commit, gitleaks, Bruno) |
+| `template/` | 파이썬 프로젝트 템플릿 (uv, Hydra, pydantic, pytest, ruff, ty, pre-commit, gitleaks, Bruno) |
 | `hook/` | Claude Code 훅 (Rust). 답변이 끝날 때 파일이 바뀌었으면 그 프로젝트의 검사를 돌린다 |
-| `scripts/check.sh` | 이 저장소 자체의 검사 (훅 소스의 포맷과 린트, 틀 검증) |
-| `scripts/check-template.sh` | 틀 검증 |
+| `scripts/check.sh` | 이 저장소 자체의 검사 (훅 소스의 포맷과 린트, 템플릿 검증) |
+| `scripts/check-template.sh` | 템플릿 검증 |
 | `scripts/setup.sh` | 장비마다 한 번 실행. 훅 설치와 이 저장소의 커밋 검사 켜기 |
 | `.pre-commit-config.yaml` | 이 저장소의 커밋 검사 (훅 소스의 포맷과 린트, 커밋 메시지 형식, 비밀값) |
 
@@ -20,7 +20,7 @@
     mkdir <프로젝트 이름> && cd <프로젝트 이름>
     uv tool run copier copy --trust --defaults ~/app/dev-standard .
 
-틀이 바뀐 뒤 기존 프로젝트에 반영:
+템플릿이 바뀐 뒤 기존 프로젝트에 반영:
 
     uv tool run copier update --trust --defaults
 
@@ -82,8 +82,8 @@
 
 ## 고친 뒤
 
-커밋할 때 훅 소스의 포맷과 린트, 커밋 메시지 형식, 비밀값 검사가 자동으로 돈다. 틀 검증은 시간이 걸려 커밋 검사에 넣지 않았으니 직접 실행한다.
+커밋할 때 훅 소스의 포맷과 린트, 커밋 메시지 형식, 비밀값 검사가 자동으로 돈다. 템플릿 검증은 시간이 걸려 커밋 검사에 넣지 않았으니 직접 실행한다.
 
     scripts/check.sh
 
-커밋한 뒤 실행한다. 틀 검증은 임시 프로젝트를 만들어 표준 검사가 바로 통과하는지, `copier update`가 프로젝트를 바꾸지 않는지 확인한다.
+커밋한 뒤 실행한다. 템플릿 검증은 임시 프로젝트를 만들어 표준 검사가 바로 통과하는지, `copier update`가 프로젝트를 바꾸지 않는지 확인한다.
