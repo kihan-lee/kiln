@@ -12,7 +12,6 @@ const COMMENT_LIMIT: usize = 20;
 const DIRECTIVES: [&str; 8] = [
     "noqa", "type:", "ty:", "pragma", "fmt:", "ruff:", "pyright:", "mypy:",
 ];
-const PY_COMMENTS: &str = include_str!("comments.py");
 
 fn git(dir: &Path, args: &[&str]) -> String {
     Command::new("git")
@@ -155,18 +154,91 @@ fn added_lines(root: &Path, file: &Path) -> Option<Vec<usize>> {
     Some(lines)
 }
 
+fn python_marks(src: &str) -> Vec<(usize, String)> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut found = Vec::new();
+    let (mut i, mut line, mut seen_code) = (0, 1, false);
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\n' {
+            line += 1;
+            i += 1;
+        } else if c == '#' {
+            let end = chars[i..]
+                .iter()
+                .position(|&x| x == '\n')
+                .map_or(chars.len(), |p| i + p);
+            found.push((line, chars[i..end].iter().collect()));
+            i = end;
+        } else if c == '"' || c == '\'' {
+            let triple = chars.get(i + 1) == Some(&c) && chars.get(i + 2) == Some(&c);
+            let width = if triple { 3 } else { 1 };
+            let (start_line, body_start) = (line, i + width);
+            let mut j = body_start;
+            let closed = loop {
+                match chars.get(j) {
+                    None => break false,
+                    Some('\\') => {
+                        if chars.get(j + 1) == Some(&'\n') {
+                            line += 1;
+                        }
+                        j += 2;
+                    }
+                    Some('\n') if !triple => break false,
+                    Some('\n') => {
+                        line += 1;
+                        j += 1;
+                    }
+                    Some(&x) if x == c => {
+                        if !triple || (chars.get(j + 1) == Some(&c) && chars.get(j + 2) == Some(&c))
+                        {
+                            break true;
+                        }
+                        j += 1;
+                    }
+                    Some(_) => j += 1,
+                }
+            };
+            let body_end = j.min(chars.len());
+            let after = if closed { j + width } else { body_end };
+            if !seen_code {
+                let rest: String = chars[after..].iter().take_while(|&&x| x != '\n').collect();
+                if rest.trim().is_empty() || rest.trim().starts_with('#') {
+                    let body: String = chars[body_start..body_end].iter().collect();
+                    let first: String = body
+                        .trim()
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(60)
+                        .collect();
+                    found.push((start_line, format!("파일 맨 위 설명문: {first}")));
+                }
+            }
+            seen_code = true;
+            i = after;
+        } else if c.is_whitespace() {
+            i += 1;
+        } else {
+            let prefix = chars[i..]
+                .iter()
+                .take_while(|x| "rRuUbBfF".contains(**x))
+                .count();
+            if prefix > 0 && matches!(chars.get(i + prefix), Some('"') | Some('\'')) {
+                i += prefix;
+            } else {
+                seen_code = true;
+                i += 1;
+            }
+        }
+    }
+    found
+}
+
 fn comments(file: &Path) -> Vec<(usize, String)> {
     match file.extension().and_then(|x| x.to_str()) {
-        Some("py") => Command::new("python3")
-            .args(["-c", PY_COMMENTS])
-            .arg(file)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| l.split_once('\t'))
-            .filter_map(|(n, text)| Some((n.parse().ok()?, text.to_string())))
-            .collect(),
+        Some("py") => python_marks(&fs::read_to_string(file).unwrap_or_default()),
         Some("rs") => fs::read_to_string(file)
             .unwrap_or_default()
             .lines()
@@ -278,7 +350,7 @@ fn main() {
                     .map(String::as_str)
                     .collect();
                 failures.push(format!(
-                    "{}$ 새로 추가된 주석과 파일 맨 위 설명문 {}건\n{}\n주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다. 파일 맨 위 설명문은 쓰지 않습니다. 함수와 클래스의 설명문은 써도 됩니다.",
+                    "{}$ 새로 추가된 주석과 파일 맨 위 설명문 {}건\n{}\n주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다. 파일 맨 위 설명문은 쓰지 않습니다.",
                     dir.display(),
                     found.len(),
                     shown.join("\n")
@@ -331,4 +403,33 @@ fn main() {
         failures.join("\n\n")
     );
     println!("{}", json!({ "decision": "block", "reason": reason }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::python_marks;
+
+    fn lines(src: &str) -> Vec<usize> {
+        python_marks(src).into_iter().map(|(n, _)| n).collect()
+    }
+
+    #[test]
+    fn finds_comments_and_module_docstring_only() {
+        assert_eq!(lines("\"\"\"top\"\"\"\nx = 1  # c\n"), vec![1, 2]);
+        assert_eq!(lines("# c\n'''top\nmore'''\n"), vec![1, 2]);
+        assert_eq!(
+            lines("x = \"#no\"\ny = '''a\n# no\n'''\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            lines("def f():\n    \"\"\"doc\"\"\"\n    return 1\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            lines("import os\n\"\"\"not top\"\"\"\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(lines("s = 'it\\'s # no'  # yes\n"), vec![1]);
+        assert_eq!(lines("x = r\"\\\\\"  # yes\n"), vec![1]);
+    }
 }

@@ -6,4 +6,5 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo fmt --manifest-path hook/Cargo.toml --check
 cargo clippy --manifest-path hook/Cargo.toml -q -- -D warnings
+cargo test --manifest-path hook/Cargo.toml -q
 bash scripts/check-template.sh
