@@ -8,6 +8,17 @@ use std::{env, fs};
 
 const MAX_BLOCKS: u32 = 3;
 const TAIL_LINES: usize = 40;
+const COMMENT_LIMIT: usize = 20;
+const DIRECTIVES: [&str; 8] = [
+    "noqa", "type:", "ty:", "pragma", "fmt:", "ruff:", "pyright:", "mypy:",
+];
+const PY_COMMENTS: &str = "import sys,tokenize
+with open(sys.argv[1],'rb') as f:
+    try:
+        for t in tokenize.tokenize(f.readline):
+            if t.type==tokenize.COMMENT: print(t.start[0],t.string,sep='\\t')
+    except (tokenize.TokenError,SyntaxError): pass
+";
 
 fn git(dir: &Path, args: &[&str]) -> String {
     Command::new("git")
@@ -117,6 +128,80 @@ fn commands(dir: &Path, files: &[PathBuf], venvs: &[PathBuf]) -> Vec<Vec<String>
     cmds
 }
 
+fn forbids_comments(dir: &Path) -> bool {
+    ["pyproject.toml", "Cargo.toml"].iter().any(|name| {
+        let text = fs::read_to_string(dir.join(name)).unwrap_or_default();
+        text.contains("dev-standard]") && text.contains("comments = \"forbid\"")
+    })
+}
+
+fn added_lines(root: &Path, file: &Path) -> Option<Vec<usize>> {
+    let name = file.to_string_lossy();
+    if git(root, &["ls-files", "--", &name]).trim().is_empty() {
+        return None;
+    }
+    let diff = git(root, &["diff", "HEAD", "-U0", "--", &name]);
+    let mut lines = Vec::new();
+    for header in diff.lines().filter(|l| l.starts_with("@@")) {
+        let Some(plus) = header.split_whitespace().find(|p| p.starts_with('+')) else {
+            continue;
+        };
+        let mut parts = plus[1..].split(',');
+        let start: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let count: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+        lines.extend(start..start + count);
+    }
+    Some(lines)
+}
+
+fn comments(file: &Path) -> Vec<(usize, String)> {
+    match file.extension().and_then(|x| x.to_str()) {
+        Some("py") => Command::new("python3")
+            .args(["-c", PY_COMMENTS])
+            .arg(file)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .filter_map(|(n, text)| Some((n.parse().ok()?, text.to_string())))
+            .collect(),
+        Some("rs") => fs::read_to_string(file)
+            .unwrap_or_default()
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.trim().to_string()))
+            .filter(|(_, l)| l.starts_with("//") && !l.starts_with("///") && !l.starts_with("//!"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn allowed(text: &str, line: usize) -> bool {
+    let body = text.trim_start_matches(['#', '/']).trim_start();
+    (line == 1 && text.starts_with("#!"))
+        || body.starts_with("이유:")
+        || DIRECTIVES.iter().any(|d| body.starts_with(d))
+}
+
+fn new_comments(root: &Path, dir: &Path, files: &[PathBuf]) -> Vec<String> {
+    let mut found = Vec::new();
+    for f in files.iter().filter(|f| f.is_file()) {
+        let all = comments(f);
+        if all.is_empty() {
+            continue;
+        }
+        let added = added_lines(root, f);
+        for (n, text) in all {
+            if added.as_ref().is_none_or(|a| a.contains(&n)) && !allowed(&text, n) {
+                let shown = f.strip_prefix(dir).unwrap_or(f).display();
+                found.push(format!("{shown}:{n}: {text}"));
+            }
+        }
+    }
+    found
+}
+
 fn main() {
     let mode = env::args().nth(1).unwrap_or_default();
     let mut input = String::new();
@@ -182,6 +267,23 @@ fn main() {
         let mut venvs = vec![dir.join(".venv")];
         if let Ok(rel) = dir.strip_prefix(&root) {
             venvs.push(main_root.join(rel).join(".venv"));
+        }
+        if forbids_comments(&dir) {
+            let found = new_comments(&root, &dir, &inside);
+            if !found.is_empty() {
+                let shown: Vec<&str> = found
+                    .iter()
+                    .take(COMMENT_LIMIT)
+                    .map(String::as_str)
+                    .collect();
+                failures.push(format!(
+                    "{}$ 새로 추가된 주석 {}건\n{}\n주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다.",
+                    dir.display(),
+                    found.len(),
+                    shown.join("\n")
+                ));
+                continue;
+            }
         }
         for cmd in commands(&dir, &inside, &venvs) {
             let Ok(out) = Command::new(&cmd[0])
