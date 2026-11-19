@@ -6,3 +6,6 @@ __pycache__/
 Thumbs.db
 .idea/
 *.log
+
+# Rust 빌드 산출물
+target/

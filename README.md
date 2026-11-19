@@ -10,7 +10,7 @@
 |---|---|
 | `template/` | 프로젝트 틀 (uv, Hydra, pydantic, pytest, ruff, pyright, pre-commit, gitleaks, Bruno) |
 | `template/scripts/check.sh` | 표준 검사 진입점. `--quick`은 lint, 포맷, 타입만, 인자 없이 부르면 테스트까지 |
-| `claude/stop_check.py` | Claude Code 훅. 답변이 끝날 때 파일이 바뀌었으면 `scripts/check.sh --quick`을 돌린다 |
+| `hook/` | Claude Code 훅 (Rust). 답변이 끝날 때 파일이 바뀌었으면 `scripts/check.sh --quick`을 돌린다 |
 | `scripts/check-template.sh` | 틀 자체의 검증 |
 
 ## 새 프로젝트
@@ -36,16 +36,20 @@
 
 ## Claude Code 훅
 
+설치 (고친 뒤에도 같은 명령으로 다시 설치):
+
+    cargo install --path hook
+
 `~/.claude/settings.json`에 아래를 넣으면 모든 프로젝트에 적용된다.
 
 ```json
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "python3 ~/app/dev-standard/claude/stop_check.py start" }] }
+      { "hooks": [{ "type": "command", "command": "~/.cargo/bin/dev-standard-hook start" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "python3 ~/app/dev-standard/claude/stop_check.py stop", "timeout": 600, "statusMessage": "표준 검사 실행 중" }] }
+      { "hooks": [{ "type": "command", "command": "~/.cargo/bin/dev-standard-hook stop", "timeout": 600, "statusMessage": "표준 검사 실행 중" }] }
     ]
   }
 }
@@ -59,7 +63,6 @@
 - 통과하면 아무것도 출력하지 않는다. 모델 문맥에 들어가는 것이 없어 토큰을 쓰지 않는다.
 - 실패하면 종료를 막고 출력 끝 40줄을 모델에 돌려준다.
 - 한 세션에서 3번 연속 막은 뒤에는 더 막지 않고 사용자에게 알린다.
-- `DEV_STANDARD_SKIP=1`이면 끈다.
 
 ## 틀을 고친 뒤
 
