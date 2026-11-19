@@ -72,22 +72,40 @@ fn projects(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-fn commands(dir: &Path) -> Vec<&'static str> {
+fn commands(dir: &Path, files: &[PathBuf]) -> Vec<Vec<String>> {
     let mut cmds = Vec::new();
     let py = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
-    let installed = |tool: &str| dir.join(".venv/bin").join(tool).is_file();
-    if py.contains("[tool.ruff") && installed("ruff") {
-        cmds.push(".venv/bin/ruff check .");
+    let tool = |name: &str| dir.join(".venv/bin").join(name);
+    let sources: Vec<String> = files
+        .iter()
+        .filter(|f| f.extension().is_some_and(|x| x == "py") && f.is_file())
+        .filter_map(|f| f.strip_prefix(dir).ok())
+        .map(|f| f.to_string_lossy().into_owned())
+        .collect();
+    if py.contains("[tool.ruff") && tool("ruff").is_file() && !sources.is_empty() {
+        let ruff = tool("ruff").to_string_lossy().into_owned();
+        let mut check = vec![ruff.clone(), "check".into(), "--force-exclude".into()];
+        check.extend(sources.iter().cloned());
+        cmds.push(check);
         if py.contains("[tool.ruff.format]") {
-            cmds.push(".venv/bin/ruff format --check .");
+            let mut format = vec![ruff, "format".into(), "--check".into()];
+            format.push("--force-exclude".into());
+            format.extend(sources.iter().cloned());
+            cmds.push(format);
         }
     }
-    if py.contains("[tool.pyright]") && installed("pyright") {
-        cmds.push(".venv/bin/pyright");
+    if py.contains("[tool.pyright]") && tool("pyright").is_file() {
+        cmds.push(vec![tool("pyright").to_string_lossy().into_owned()]);
     }
     if dir.join("Cargo.toml").is_file() {
-        cmds.push("cargo fmt --check");
-        cmds.push("cargo clippy -q -- -D warnings");
+        let cargo = format!("{}/.cargo/bin/cargo", env::var("HOME").unwrap_or_default());
+        cmds.push(vec![cargo.clone(), "fmt".into(), "--check".into()]);
+        let clippy = ["clippy", "-q", "--", "-D", "warnings"];
+        cmds.push(
+            std::iter::once(cargo)
+                .chain(clippy.map(String::from))
+                .collect(),
+        );
     }
     cmds
 }
@@ -141,9 +159,14 @@ fn main() {
     );
     let mut failures = Vec::new();
     for dir in projects(&root, &files) {
-        for cmd in commands(&dir) {
-            let Ok(out) = Command::new("bash")
-                .args(["-c", cmd])
+        let inside: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| f.starts_with(&dir))
+            .cloned()
+            .collect();
+        for cmd in commands(&dir, &inside) {
+            let Ok(out) = Command::new(&cmd[0])
+                .args(&cmd[1..])
                 .env("PATH", format!("{}/.venv/bin:{}", dir.display(), path))
                 .env("VIRTUAL_ENV", dir.join(".venv"))
                 .env("TERM", "dumb")
@@ -161,7 +184,8 @@ fn main() {
                 );
                 let lines: Vec<&str> = text.trim().lines().collect();
                 let tail = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
-                failures.push(format!("{}$ {}\n{}", dir.display(), cmd, tail));
+                let shown = cmd.join(" ").replace(&format!("{}/", dir.display()), "");
+                failures.push(format!("{}$ {}\n{}", dir.display(), shown, tail));
                 break;
             }
         }
