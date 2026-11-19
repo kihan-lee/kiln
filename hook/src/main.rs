@@ -130,8 +130,15 @@ fn commands(dir: &Path, files: &[PathBuf], venvs: &[PathBuf]) -> Vec<Vec<String>
 
 fn forbids_comments(dir: &Path) -> bool {
     ["pyproject.toml", "Cargo.toml"].iter().any(|name| {
-        let text = fs::read_to_string(dir.join(name)).unwrap_or_default();
-        text.contains("dev-standard]") && text.contains("comments = \"forbid\"")
+        fs::read_to_string(dir.join(name))
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .skip_while(|l| !(l.starts_with('[') && l.ends_with("dev-standard]")))
+            .skip(1)
+            .take_while(|l| !l.starts_with('['))
+            .filter_map(|l| l.split_once('='))
+            .any(|(key, value)| key.trim() == "comments" && value.trim() == "false")
     })
 }
 

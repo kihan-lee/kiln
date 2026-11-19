@@ -57,11 +57,11 @@
 
     # pyproject.toml
     [tool.dev-standard]
-    comments = "forbid"
+    comments = false
 
     # Cargo.toml
     [package.metadata.dev-standard]
-    comments = "forbid"
+    comments = false
 
 - 이번에 추가되거나 바뀐 줄만 본다. 원래 있던 주석은 건드리지 않는다.
 - 파이썬은 줄 전체 주석과 줄 끝 주석을 모두 본다. 문자열 안의 `#`과 함수 설명문(docstring)은 주석이 아니다.

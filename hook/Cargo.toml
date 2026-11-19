@@ -10,4 +10,4 @@ serde_json = "1"
 strip = true
 
 [package.metadata.dev-standard]
-comments = "forbid"
+comments = false
