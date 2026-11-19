@@ -72,18 +72,25 @@ fn projects(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-fn commands(dir: &Path, files: &[PathBuf]) -> Vec<Vec<String>> {
+fn commands(dir: &Path, files: &[PathBuf], venvs: &[PathBuf]) -> Vec<Vec<String>> {
     let mut cmds = Vec::new();
     let py = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
-    let tool = |name: &str| dir.join(".venv/bin").join(name);
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    let tool = |name: &str| {
+        venvs
+            .iter()
+            .find(|v| v.join("bin").join(name).is_file())
+            .map(|v| (text(&v.join("bin").join(name)), text(v)))
+    };
     let sources: Vec<String> = files
         .iter()
         .filter(|f| f.extension().is_some_and(|x| x == "py") && f.is_file())
         .filter_map(|f| f.strip_prefix(dir).ok())
-        .map(|f| f.to_string_lossy().into_owned())
+        .map(text)
         .collect();
-    if py.contains("[tool.ruff") && tool("ruff").is_file() && !sources.is_empty() {
-        let ruff = tool("ruff").to_string_lossy().into_owned();
+    if let (true, false, Some((ruff, _))) =
+        (py.contains("[tool.ruff"), sources.is_empty(), tool("ruff"))
+    {
         let mut check = vec![ruff.clone(), "check".into(), "--force-exclude".into()];
         check.extend(sources.iter().cloned());
         cmds.push(check);
@@ -94,8 +101,8 @@ fn commands(dir: &Path, files: &[PathBuf]) -> Vec<Vec<String>> {
             cmds.push(format);
         }
     }
-    if py.contains("[tool.pyright]") && tool("pyright").is_file() {
-        cmds.push(vec![tool("pyright").to_string_lossy().into_owned()]);
+    if let (true, Some((ty, venv))) = (py.contains("[tool.ty"), tool("ty")) {
+        cmds.push(vec![ty, "check".into(), "--python".into(), venv]);
     }
     if dir.join("Cargo.toml").is_file() {
         let cargo = format!("{}/.cargo/bin/cargo", env::var("HOME").unwrap_or_default());
@@ -157,6 +164,14 @@ fn main() {
         env::var("HOME").unwrap_or_default(),
         env::var("PATH").unwrap_or_default()
     );
+    let common = git(
+        &root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    let main_root = Path::new(common.trim())
+        .parent()
+        .unwrap_or(&root)
+        .to_path_buf();
     let mut failures = Vec::new();
     for dir in projects(&root, &files) {
         let inside: Vec<PathBuf> = files
@@ -164,11 +179,14 @@ fn main() {
             .filter(|f| f.starts_with(&dir))
             .cloned()
             .collect();
-        for cmd in commands(&dir, &inside) {
+        let mut venvs = vec![dir.join(".venv")];
+        if let Ok(rel) = dir.strip_prefix(&root) {
+            venvs.push(main_root.join(rel).join(".venv"));
+        }
+        for cmd in commands(&dir, &inside, &venvs) {
             let Ok(out) = Command::new(&cmd[0])
                 .args(&cmd[1..])
-                .env("PATH", format!("{}/.venv/bin:{}", dir.display(), path))
-                .env("VIRTUAL_ENV", dir.join(".venv"))
+                .env("PATH", &path)
                 .env("TERM", "dumb")
                 .env("NO_COLOR", "1")
                 .current_dir(&dir)

@@ -8,7 +8,7 @@
 
 | 경로 | 역할 |
 |---|---|
-| `template/` | 파이썬 프로젝트 틀 (uv, Hydra, pydantic, pytest, ruff, pyright, pre-commit, gitleaks, Bruno) |
+| `template/` | 파이썬 프로젝트 틀 (uv, Hydra, pydantic, pytest, ruff, ty, pre-commit, gitleaks, Bruno) |
 | `hook/` | Claude Code 훅 (Rust). 답변이 끝날 때 파일이 바뀌었으면 그 프로젝트의 검사를 돌린다 |
 | `scripts/check.sh` | 이 저장소 자체의 검사 (훅 소스의 포맷과 린트, 틀 검증) |
 | `scripts/check-template.sh` | 틀 검증 |
@@ -38,14 +38,14 @@
 
 | 조건 | 실행하는 명령 | 범위 |
 |---|---|---|
-| `pyproject.toml`에 `[tool.ruff`가 있고 `.venv/bin/ruff`가 있음 | `ruff check` | 이번에 바뀐 `.py` 파일만 |
+| `pyproject.toml`에 `[tool.ruff`가 있고 ruff가 설치돼 있음 | `ruff check` | 이번에 바뀐 `.py` 파일만 |
 | 위에 더해 `[tool.ruff.format]`이 있음 | `ruff format --check` | 이번에 바뀐 `.py` 파일만 |
-| `[tool.pyright]`가 있고 `.venv/bin/pyright`가 있음 | `pyright` | 프로젝트 전체 |
+| `pyproject.toml`에 `[tool.ty`가 있고 ty가 설치돼 있음 | `ty check` | 프로젝트 전체 |
 | `Cargo.toml`이 있음 | `cargo fmt --check`, `cargo clippy -q -- -D warnings` | 프로젝트 전체 |
 
 린트와 포맷은 새로 생기는 위반을 막는 것이 목적이라 바뀐 파일만 본다. 예전 위반은 따로 정리한다. 타입 검사와 Rust 검사는 한 파일의 변경이 다른 파일을 깨뜨릴 수 있어 전체를 본다.
 
-훅은 가상환경을 만들거나 의존성을 설치하지 않는다. `.venv`에 도구가 없으면 그 검사는 건너뛴다.
+훅은 가상환경을 만들거나 의존성을 설치하지 않는다. 도구는 그 프로젝트의 `.venv`에서 찾고, 없으면 같은 저장소의 원래 작업 폴더(git worktree의 본체)에 있는 `.venv`에서 찾는다. 둘 다 없으면 그 검사는 건너뛴다.
 
 어떤 검사를 빼려면 그 프로젝트의 `pyproject.toml`에서 해당 설정을 넣지 않는다.
 
