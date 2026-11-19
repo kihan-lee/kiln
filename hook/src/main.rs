@@ -120,6 +120,8 @@ fn main() {
         let Ok(out) = Command::new("bash")
             .arg(&script)
             .arg("--quick")
+            .env("TERM", "dumb")
+            .env("NO_COLOR", "1")
             .current_dir(dir)
             .output()
         else {
