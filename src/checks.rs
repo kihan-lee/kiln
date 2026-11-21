@@ -53,8 +53,20 @@ fn check(name: &str, argv: Vec<String>) -> Check {
     }
 }
 
-pub fn plan(dir: &Path, files: &[PathBuf], venvs: &[PathBuf], path: &str) -> Vec<Check> {
+pub struct Plan {
+    pub checks: Vec<Check>,
+    pub missing: Vec<String>,
+}
+
+pub fn plan(
+    dir: &Path,
+    files: Option<&[PathBuf]>,
+    venvs: &[PathBuf],
+    path: &str,
+    with_tests: bool,
+) -> Plan {
     let mut checks = Vec::new();
+    let mut missing = Vec::new();
     let py = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
     let text = |p: &Path| p.to_string_lossy().into_owned();
     let tool = |name: &str| {
@@ -63,30 +75,47 @@ pub fn plan(dir: &Path, files: &[PathBuf], venvs: &[PathBuf], path: &str) -> Vec
             .find(|v| v.join("bin").join(name).is_file())
             .map(|v| (text(&v.join("bin").join(name)), text(v)))
     };
-    let sources: Vec<String> = files
-        .iter()
-        .filter(|f| f.extension().is_some_and(|x| x == "py") && f.is_file())
-        .filter_map(|f| f.strip_prefix(dir).ok())
-        .map(text)
-        .collect();
-    if let (true, false, Some((ruff, _))) =
-        (py.contains("[tool.ruff"), sources.is_empty(), tool("ruff"))
-    {
-        let mut lint = vec![ruff.clone(), "check".into(), "--force-exclude".into()];
-        lint.extend(sources.iter().cloned());
-        checks.push(check("ruff check", lint));
-        if py.contains("[tool.ruff.format]") {
-            let mut format = vec![ruff, "format".into(), "--check".into()];
-            format.push("--force-exclude".into());
-            format.extend(sources.iter().cloned());
-            checks.push(check("ruff format", format));
+    let sources: Vec<String> = match files {
+        Some(files) => files
+            .iter()
+            .filter(|f| f.extension().is_some_and(|x| x == "py") && f.is_file())
+            .filter_map(|f| f.strip_prefix(dir).ok())
+            .map(text)
+            .collect(),
+        None => vec![".".into()],
+    };
+    if py.contains("[tool.ruff") && !sources.is_empty() {
+        match tool("ruff") {
+            Some((ruff, _)) => {
+                let mut lint = vec![ruff.clone(), "check".into(), "--force-exclude".into()];
+                lint.extend(sources.iter().cloned());
+                checks.push(check("ruff check", lint));
+                if py.contains("[tool.ruff.format]") {
+                    let mut format = vec![ruff, "format".into(), "--check".into()];
+                    format.push("--force-exclude".into());
+                    format.extend(sources.iter().cloned());
+                    checks.push(check("ruff format", format));
+                }
+            }
+            None => missing.push("ruff".into()),
         }
     }
-    if let (true, Some((ty, venv))) = (py.contains("[tool.ty"), tool("ty")) {
-        checks.push(check(
-            "ty",
-            vec![ty, "check".into(), "--python".into(), venv],
-        ));
+    if py.contains("[tool.ty") {
+        match tool("ty") {
+            Some((ty, venv)) => {
+                checks.push(check(
+                    "ty",
+                    vec![ty, "check".into(), "--python".into(), venv],
+                ));
+            }
+            None => missing.push("ty".into()),
+        }
+    }
+    if with_tests && py.contains("[tool.pytest") {
+        match tool("pytest") {
+            Some((pytest, _)) => checks.push(check("pytest", vec![pytest, "-q".into()])),
+            None => missing.push("pytest".into()),
+        }
     }
     if dir.join("Cargo.toml").is_file() {
         let cargo = find_on_path("cargo", path).map_or_else(|| "cargo".into(), |p| text(&p));
@@ -94,15 +123,18 @@ pub fn plan(dir: &Path, files: &[PathBuf], venvs: &[PathBuf], path: &str) -> Vec
             "cargo fmt",
             vec![cargo.clone(), "fmt".into(), "--check".into()],
         ));
-        let clippy = ["clippy", "-q", "--", "-D", "warnings"];
+        let clippy = ["clippy", "--all-targets", "-q", "--", "-D", "warnings"];
         checks.push(check(
             "cargo clippy",
-            std::iter::once(cargo)
+            std::iter::once(cargo.clone())
                 .chain(clippy.map(String::from))
                 .collect(),
         ));
+        if with_tests {
+            checks.push(check("cargo test", vec![cargo, "test".into(), "-q".into()]));
+        }
     }
-    checks
+    Plan { checks, missing }
 }
 
 pub fn run(check: &Check, dir: &Path, path: &str, tail_lines: usize) -> Outcome {

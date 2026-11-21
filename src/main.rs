@@ -1,0 +1,353 @@
+mod checks;
+mod comments;
+mod commit_msg;
+mod git;
+mod scope;
+mod state;
+mod stats;
+
+use checks::Outcome;
+use comments::Kind;
+use scope::Baseline;
+use serde_json::{json, Value};
+use state::State;
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::{env, fs};
+
+const MAX_BLOCKS: u32 = 3;
+const TAIL_LINES: usize = 40;
+const FINDING_LIMIT: usize = 20;
+const USAGE: &str = "사용:
+  kiln check --staged        커밋할 내용 검사 (pre-commit)
+  kiln check --base <ref>    <ref>와 갈라진 뒤 바뀐 내용 검사 (CI)
+  kiln check --all           프로젝트 전체 검사 (새 주석 검사 제외)
+  kiln commit-msg <file>     커밋 메시지 형식 검사 (commit-msg)
+  kiln hook start|stop       Claude Code 훅
+  kiln stats                 훅 기록 요약";
+
+struct Failure {
+    project: PathBuf,
+    check: String,
+    count: usize,
+    report: String,
+}
+
+#[derive(Default)]
+struct Report {
+    failures: Vec<Failure>,
+    skipped: Vec<String>,
+}
+
+fn findings_failure(dir: &Path, found: &[comments::Finding]) -> Vec<Failure> {
+    let mut failures = Vec::new();
+    for (kind, check, title, guide) in [
+        (
+            Kind::Suppression,
+            "suppressions",
+            "새로 추가된 검사 끄기 표시",
+            "검사를 끄는 표시(noqa, type: ignore, #[allow] 등)는 쓰지 않습니다. 원인을 고치세요. 정말 필요한 예외는 줄에 붙이지 말고 설정 파일(pyproject.toml의 per-file-ignores, Cargo.toml의 [lints])에 모읍니다.",
+        ),
+        (
+            Kind::Comment,
+            "comments",
+            "새로 추가된 주석과 파일 맨 위 설명문",
+            "주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다. 파일 맨 위 설명문은 쓰지 않습니다.",
+        ),
+    ] {
+        let hits: Vec<&str> = found
+            .iter()
+            .filter(|f| f.kind == kind)
+            .map(|f| f.text.as_str())
+            .collect();
+        if hits.is_empty() {
+            continue;
+        }
+        let shown: Vec<&str> = hits.iter().take(FINDING_LIMIT).copied().collect();
+        failures.push(Failure {
+            project: dir.to_path_buf(),
+            check: check.into(),
+            count: hits.len(),
+            report: format!(
+                "{}$ {title} {}건\n{}\n{guide}",
+                dir.display(),
+                hits.len(),
+                shown.join("\n")
+            ),
+        });
+    }
+    failures
+}
+
+fn evaluate(
+    root: &Path,
+    files: &[PathBuf],
+    whole: bool,
+    baseline: &Baseline,
+    with_tests: bool,
+) -> Report {
+    let path = checks::search_path();
+    let main_root = git::main_worktree(root);
+    let mut report = Report::default();
+    for dir in checks::projects(root, files) {
+        let inside: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| f.starts_with(&dir))
+            .cloned()
+            .collect();
+        if comments::forbids_comments(&dir) {
+            let found = comments::new_findings(root, &dir, &inside, baseline);
+            if !found.is_empty() {
+                report.failures.extend(findings_failure(&dir, &found));
+                continue;
+            }
+        }
+        let mut venvs = vec![dir.join(".venv")];
+        if let Ok(rel) = dir.strip_prefix(root) {
+            venvs.push(main_root.join(rel).join(".venv"));
+        }
+        let scope = (!whole).then_some(inside.as_slice());
+        let plan = checks::plan(&dir, scope, &venvs, &path, with_tests);
+        for name in plan.missing {
+            report
+                .skipped
+                .push(format!("{name} ({}의 .venv에 없음)", dir.display()));
+        }
+        for check in plan.checks {
+            match checks::run(&check, &dir, &path, TAIL_LINES) {
+                Outcome::Passed => {}
+                Outcome::Missing => {
+                    report
+                        .skipped
+                        .push(format!("{} ({}에서 실행 불가)", check.name, dir.display()))
+                }
+                Outcome::Failed(tail) => {
+                    let shown = check
+                        .argv
+                        .join(" ")
+                        .replace(&format!("{}/", dir.display()), "");
+                    report.failures.push(Failure {
+                        project: dir.clone(),
+                        check: check.name.clone(),
+                        count: 1,
+                        report: format!("{}$ {shown}\n{tail}", dir.display()),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    report
+}
+
+fn session_files(dirty: &[PathBuf], snapshot: &HashMap<PathBuf, String>) -> Vec<(PathBuf, String)> {
+    dirty
+        .iter()
+        .map(|f| (f.clone(), state::content_hash(f)))
+        .filter(|(f, digest)| snapshot.get(f) != Some(digest))
+        .collect()
+}
+
+fn with_event(mut entry: Value, event: &str) -> Value {
+    entry["event"] = json!(event);
+    entry
+}
+
+fn hook_stop(root: &Path, session: &str, state: &State) {
+    let snapshot = state.load_snapshot(root).unwrap_or_default();
+    let changed = session_files(&git::dirty_files(root), &snapshot);
+    if changed.is_empty() {
+        return;
+    }
+    let mut stamp: Vec<String> = changed
+        .iter()
+        .map(|(f, d)| format!("{}:{d}", f.display()))
+        .collect();
+    stamp.sort();
+    stamp.push(git::head(root));
+    let fingerprint = state::hash(&stamp.iter().map(String::as_str).collect::<Vec<_>>());
+    if State::read(&state.passed) == fingerprint {
+        return;
+    }
+
+    let files: Vec<PathBuf> = changed.into_iter().map(|(f, _)| f).collect();
+    let baseline = Baseline::Session {
+        state,
+        snapshot: &snapshot,
+    };
+    let report = evaluate(root, &files, false, &baseline, false);
+
+    let failed: Vec<Value> = report
+        .failures
+        .iter()
+        .map(|f| {
+            let project = f.project.strip_prefix(root).unwrap_or(&f.project);
+            json!({ "project": project.display().to_string(), "check": f.check, "count": f.count })
+        })
+        .collect();
+    let base = json!({
+        "session": session,
+        "root": root.display().to_string(),
+        "files": files.len(),
+        "failed": failed,
+        "skipped": report.skipped,
+    });
+    let skip_note = (!report.skipped.is_empty())
+        .then(|| format!("실행하지 못해 건너뛴 검사: {}", report.skipped.join(", ")));
+
+    if report.failures.is_empty() {
+        let _ = fs::write(&state.passed, &fingerprint);
+        let _ = fs::remove_file(&state.blocks);
+        state.log(with_event(base, "pass"));
+        if let Some(note) = skip_note {
+            println!("{}", json!({ "systemMessage": note }));
+        }
+        return;
+    }
+
+    let count = State::read(&state.blocks)
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(0)
+        + 1;
+    if count > MAX_BLOCKS {
+        let _ = fs::remove_file(&state.blocks);
+        state.log(with_event(base, "giveup"));
+        let message = format!("표준 검사가 {MAX_BLOCKS}번 연속 실패한 채 답변이 끝났습니다");
+        println!("{}", json!({ "systemMessage": message }));
+        return;
+    }
+    let _ = fs::write(&state.blocks, count.to_string());
+    state.log(with_event(base, "block"));
+    let reports: Vec<&str> = report.failures.iter().map(|f| f.report.as_str()).collect();
+    let reason = format!(
+        "표준 검사가 실패했습니다. 원인을 고친 뒤 끝내세요. 검사를 끄거나 규칙을 무시하는 표시로 넘기지 마세요.\n\n{}",
+        reports.join("\n\n")
+    );
+    let mut out = json!({ "decision": "block", "reason": reason });
+    if let Some(note) = skip_note {
+        out["systemMessage"] = json!(note);
+    }
+    println!("{out}");
+}
+
+fn hook(mode: &str) -> ExitCode {
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+    let cwd = payload["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_default();
+    let session = payload["session_id"].as_str().unwrap_or("unknown");
+    let Some(root) = git::toplevel(&cwd) else {
+        return ExitCode::SUCCESS;
+    };
+    let state = State::new(State::base_dir(), session, &root);
+    match mode {
+        "start" => {
+            state.clean_old();
+            state.save_snapshot(&root, &git::dirty_files(&root));
+        }
+        "stop" => hook_stop(&root, session, &state),
+        _ => return usage(),
+    }
+    ExitCode::SUCCESS
+}
+
+fn check(args: &[String]) -> ExitCode {
+    let cwd = env::current_dir().unwrap_or_default();
+    let Some(root) = git::toplevel(&cwd) else {
+        eprintln!("git 저장소 안에서 실행하세요");
+        return ExitCode::from(2);
+    };
+    let base;
+    let (files, baseline, whole) = match args.first().map(String::as_str) {
+        Some("--staged") => (scope::staged_files(&root), Baseline::Index, false),
+        Some("--base") => {
+            let Some(reference) = args.get(1) else {
+                return usage();
+            };
+            let Some(found) = scope::merge_base(&root, reference) else {
+                eprintln!("{reference}와 HEAD의 공통 조상을 찾지 못했습니다");
+                return ExitCode::from(2);
+            };
+            base = found;
+            (
+                scope::files_since(&root, &base),
+                Baseline::Ref(base.clone()),
+                false,
+            )
+        }
+        Some("--all") => (scope::tracked_files(&root), Baseline::Nothing, true),
+        _ => return usage(),
+    };
+    let report = evaluate(&root, &files, whole, &baseline, true);
+    for note in &report.skipped {
+        eprintln!("kiln: 건너뜀: {note}");
+    }
+    for failure in &report.failures {
+        eprintln!("{}\n", failure.report);
+    }
+    if report.failures.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn commit_msg(args: &[String]) -> ExitCode {
+    let Some(file) = args.first() else {
+        return usage();
+    };
+    let message = fs::read_to_string(file).unwrap_or_default();
+    let errors = commit_msg::check(&message);
+    for e in &errors {
+        eprintln!("커밋 메시지 오류: {e}");
+    }
+    if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn marks(args: &[String]) -> ExitCode {
+    for file in args {
+        let src = fs::read_to_string(file).unwrap_or_default();
+        let lines: Vec<String> = comments::python_marks(&src)
+            .into_iter()
+            .map(|(n, _)| n.to_string())
+            .collect();
+        println!("{file}\t{}", lines.join(","));
+    }
+    ExitCode::SUCCESS
+}
+
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let rest = args.get(1..).unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("check") => check(rest),
+        Some("commit-msg") => commit_msg(rest),
+        Some("hook") => hook(rest.first().map_or("", String::as_str)),
+        Some("stats") => {
+            stats::print(&State::base_dir());
+            ExitCode::SUCCESS
+        }
+        Some("marks") => marks(rest),
+        Some("--version") => {
+            println!("kiln {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        _ => usage(),
+    }
+}

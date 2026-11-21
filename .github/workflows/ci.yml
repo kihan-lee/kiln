@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  hook:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,6 +14,4 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: hook
       - run: bash scripts/check.sh

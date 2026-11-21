@@ -1,5 +1,5 @@
 [package]
-name = "dev-standard-hook"
+name = "kiln"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,5 +9,5 @@ serde_json = "1"
 [profile.release]
 strip = true
 
-[package.metadata.dev-standard]
+[package.metadata.kiln]
 comments = false

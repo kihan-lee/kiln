@@ -11,7 +11,7 @@ struct Repo {
 
 impl Repo {
     fn new(name: &str, manifest: (&str, &str)) -> Self {
-        let base = std::env::temp_dir().join(format!("dsh-{}-{name}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("kiln-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let root = base.join("repo");
         fs::create_dir_all(&root).unwrap();
@@ -50,8 +50,8 @@ impl Repo {
     }
 
     fn hook(&self, mode: &str, session: &str) -> Option<Value> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_dev-standard-hook"))
-            .arg(mode)
+        let mut child = Command::new(env!("CARGO_BIN_EXE_kiln"))
+            .args(["hook", mode])
             .env("XDG_STATE_HOME", &self.state)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -72,8 +72,21 @@ impl Repo {
         (!text.trim().is_empty()).then(|| serde_json::from_str(text.trim()).unwrap())
     }
 
+    fn kiln(&self, args: &[&str]) -> (bool, String) {
+        let out = Command::new(env!("CARGO_BIN_EXE_kiln"))
+            .args(args)
+            .env("XDG_STATE_HOME", &self.state)
+            .current_dir(&self.root)
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     fn log_events(&self) -> Vec<String> {
-        fs::read_to_string(self.state.join("dev-standard/log.jsonl"))
+        fs::read_to_string(self.state.join("kiln/log.jsonl"))
             .unwrap_or_default()
             .lines()
             .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
@@ -83,7 +96,7 @@ impl Repo {
 
 const PY: (&str, &str) = (
     "pyproject.toml",
-    "[project]\nname = \"x\"\n\n[tool.dev-standard]\ncomments = false\n",
+    "[project]\nname = \"x\"\n\n[tool.kiln]\ncomments = false\n",
 );
 
 fn reason(out: &Option<Value>) -> String {
@@ -183,7 +196,7 @@ fn blocks_rust_comments_and_allow_attributes_but_not_doc_comments() {
         "rust",
         (
             "Cargo.toml",
-            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.dev-standard]\ncomments = false\n",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.kiln]\ncomments = false\n",
         ),
     );
     repo.hook("start", "s");
@@ -208,8 +221,8 @@ fn reports_checks_that_could_not_run() {
     );
     repo.hook("start", "s");
     repo.write("src/lib.rs", "pub fn f() {}\n");
-    let out = Command::new(env!("CARGO_BIN_EXE_dev-standard-hook"))
-        .arg("stop")
+    let out = Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args(["hook", "stop"])
         .env("XDG_STATE_HOME", &repo.state)
         .env("HOME", repo.root.join("no-home"))
         .env("PATH", "/usr/bin:/bin")
@@ -220,4 +233,47 @@ fn reports_checks_that_could_not_run() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("건너뛴 검사"), "{text}");
     assert!(text.contains("cargo fmt"), "{text}");
+}
+
+#[test]
+fn check_staged_looks_only_at_staged_additions() {
+    let repo = Repo::new("staged", PY);
+    repo.write("a.py", "x = 1  # 예전 주석\n");
+    repo.commit();
+    repo.write("a.py", "x = 1  # 예전 주석\ny = 2\n");
+    repo.write("b.py", "z = 3  # 아직 스테이징 안 함\n");
+    repo.git(&["add", "a.py"]);
+    assert!(repo.kiln(&["check", "--staged"]).0);
+
+    repo.write("a.py", "x = 1  # 예전 주석\ny = 2  # noqa\n");
+    repo.git(&["add", "a.py"]);
+    let (ok, err) = repo.kiln(&["check", "--staged"]);
+    assert!(!ok);
+    assert!(err.contains("a.py:2"), "{err}");
+    assert!(!err.contains("b.py"), "{err}");
+}
+
+#[test]
+fn check_base_compares_against_the_merge_base() {
+    let repo = Repo::new("base", PY);
+    repo.git(&["branch", "-M", "main"]);
+    repo.write("a.py", "x = 1  # 예전 주석\n");
+    repo.commit();
+    repo.git(&["checkout", "-qb", "feature"]);
+    repo.write("a.py", "x = 1  # 예전 주석\ny = 2  # 새 주석\n");
+    repo.commit();
+    let (ok, err) = repo.kiln(&["check", "--base", "main"]);
+    assert!(!ok);
+    assert!(err.contains("a.py:2") && !err.contains("a.py:1"), "{err}");
+    assert!(repo.kiln(&["check", "--all"]).0);
+}
+
+#[test]
+fn commit_msg_rejects_bad_messages() {
+    let repo = Repo::new("msg", PY);
+    repo.write("good", "feat: 추가\n");
+    repo.write("bad", "추가함\n");
+    assert!(repo.kiln(&["commit-msg", "good"]).0);
+    let (ok, err) = repo.kiln(&["commit-msg", "bad"]);
+    assert!(!ok && err.contains("타입: 요약"), "{err}");
 }

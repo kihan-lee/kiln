@@ -1,6 +1,4 @@
-use crate::git;
-use crate::state::State;
-use std::collections::HashMap;
+use crate::scope::Baseline;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,7 +31,7 @@ pub fn forbids_comments(dir: &Path) -> bool {
             .unwrap_or_default()
             .lines()
             .map(str::trim)
-            .skip_while(|l| !(l.starts_with('[') && l.ends_with("dev-standard]")))
+            .skip_while(|l| !(l.starts_with('[') && l.ends_with("kiln]")))
             .skip(1)
             .take_while(|l| !l.starts_with('['))
             .filter_map(|l| l.split_once('='))
@@ -165,24 +163,11 @@ fn marks(file: &Path) -> Vec<(usize, String)> {
     }
 }
 
-fn added_lines(
-    root: &Path,
-    file: &Path,
-    state: &State,
-    snapshot: &HashMap<PathBuf, String>,
-) -> Option<Vec<usize>> {
-    if let Some(copy) = snapshot.get(file).and_then(|d| state.snapshot_copy(d)) {
-        return Some(git::added_since_copy(root, &copy, file));
-    }
-    git::is_tracked(root, file).then(|| git::added_since_head(root, file))
-}
-
 pub fn new_findings(
     root: &Path,
     dir: &Path,
     files: &[PathBuf],
-    state: &State,
-    snapshot: &HashMap<PathBuf, String>,
+    baseline: &Baseline,
 ) -> Vec<Finding> {
     let mut found = Vec::new();
     for f in files.iter().filter(|f| f.is_file()) {
@@ -190,7 +175,7 @@ pub fn new_findings(
         if all.is_empty() {
             continue;
         }
-        let added = added_lines(root, f, state, snapshot);
+        let added = baseline.added(root, f);
         for (n, text) in all {
             if !added.as_ref().is_none_or(|a| a.contains(&n)) {
                 continue;

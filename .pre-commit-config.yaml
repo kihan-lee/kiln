@@ -1,25 +1,17 @@
-# 이 저장소 자체의 커밋 검사. 설치: scripts/setup.sh
 default_install_hook_types: [pre-commit, commit-msg]
 default_stages: [pre-commit]
 
 repos:
   - repo: local
     hooks:
-      - id: cargo-fmt
-        name: cargo fmt (훅 소스)
-        entry: bash -c 'PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path hook/Cargo.toml --check'
+      - id: kiln-check
+        name: kiln check (포맷, 린트, 테스트, 새 주석)
+        entry: bash -c 'PATH="$HOME/.cargo/bin:$PATH" cargo run -q --release -- check --staged'
         language: system
-        files: ^hook/
         pass_filenames: false
-      - id: cargo-clippy
-        name: cargo clippy (훅 소스)
-        entry: bash -c 'PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path hook/Cargo.toml --all-targets -q -- -D warnings'
-        language: system
-        files: ^hook/
-        pass_filenames: false
-      - id: commit-msg
+      - id: kiln-commit-msg
         name: 커밋 메시지 형식
-        entry: python3 scripts/check_commit_msg.py
+        entry: bash -c 'PATH="$HOME/.cargo/bin:$PATH" cargo run -q --release -- commit-msg "$1"' --
         language: system
         stages: [commit-msg]
 

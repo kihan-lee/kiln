@@ -54,7 +54,7 @@ impl State {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state")
             })
-            .join("dev-standard")
+            .join("kiln")
     }
 
     pub fn read(path: &Path) -> String {
