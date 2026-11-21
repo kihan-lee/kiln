@@ -1,4 +1,4 @@
-# 템플릿 저장소 자체용. 생성될 프로젝트의 .gitignore는 template/.gitignore
+# Python 캐시와 편집기 파일
 __pycache__/
 *.py[oc]
 .venv

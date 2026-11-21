@@ -19,7 +19,7 @@ repos:
         pass_filenames: false
       - id: commit-msg
         name: 커밋 메시지 형식
-        entry: python3 template/scripts/check_commit_msg.py
+        entry: python3 scripts/check_commit_msg.py
         language: system
         stages: [commit-msg]
 
