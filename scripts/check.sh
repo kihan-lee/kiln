@@ -5,5 +5,5 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo fmt --manifest-path hook/Cargo.toml --check
-cargo clippy --manifest-path hook/Cargo.toml -q -- -D warnings
+cargo clippy --manifest-path hook/Cargo.toml --all-targets -q -- -D warnings
 cargo test --manifest-path hook/Cargo.toml -q

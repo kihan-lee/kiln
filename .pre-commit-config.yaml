@@ -13,7 +13,7 @@ repos:
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy (훅 소스)
-        entry: bash -c 'PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path hook/Cargo.toml -q -- -D warnings'
+        entry: bash -c 'PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path hook/Cargo.toml --all-targets -q -- -D warnings'
         language: system
         files: ^hook/
         pass_filenames: false
