@@ -33,6 +33,7 @@ pub struct State {
     pub snapshot: PathBuf,
     pub blocks: PathBuf,
     pub passed: PathBuf,
+    pub noticed: PathBuf,
 }
 
 impl State {
@@ -43,6 +44,7 @@ impl State {
         State {
             snapshot: base.join(format!("snapshot-{session_key}")),
             blocks: base.join(format!("blocks-{session_key}")),
+            noticed: base.join(format!("noticed-{session_key}")),
             passed: base.join(format!("passed-{}", hash(&[&key]))),
             dir: base,
         }

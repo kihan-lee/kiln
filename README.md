@@ -21,11 +21,21 @@
 | `kiln check --all` | 직접 실행 | 프로젝트 전체 (새 주석 검사는 제외) |
 | `kiln commit-msg <file>` | commit-msg | 커밋 메시지 형식 |
 | `kiln hook start`, `kiln hook stop` | Claude Code 훅 | 대화가 시작된 뒤 바뀐 내용 |
+| `kiln status` | 직접 실행 | 지금 위치에서 어떤 검사가 어떤 도구로 도는지 |
 | `kiln stats` | 직접 실행 | 훅 기록 요약 |
 
 ## 검사 내용
 
-바뀐 파일에서 위로 올라가며 가장 가까운 `pyproject.toml`이나 `Cargo.toml`을 찾고, 그 프로젝트에 설정된 도구만 돌린다. 가상환경을 만들거나 의존성을 설치하지 않는다. 도구는 프로젝트의 `.venv`에서 찾고, 없으면 git worktree 본체의 `.venv`에서 찾는다. 설정은 있는데 도구가 없으면 건너뛰었다고 알린다.
+바뀐 파일에서 위로 올라가며 가장 가까운 `pyproject.toml`이나 `Cargo.toml`을 찾고, 그 프로젝트에 설정된 도구만 돌린다. 템플릿이 아닌 프로젝트에서도 그대로 동작한다. 설정이 없는 프로젝트에서는 아무것도 하지 않는다.
+
+가상환경을 만들거나 의존성을 설치하지 않는다. 도구는 아래 순서로 찾는다.
+
+1. 프로젝트의 `.venv`
+2. git worktree 본체의 `.venv`
+3. 활성화된 가상환경 (`VIRTUAL_ENV`, conda의 `CONDA_PREFIX`)
+4. ruff만: `PATH` (ruff는 환경과 무관하게 동작한다. ty와 pytest는 프로젝트 의존성이 있는 환경이 필요해서 `PATH`에서 찾지 않는다)
+
+설정은 있는데 도구를 못 찾으면 그 검사는 건너뛰고, 훅에서는 대화마다 한 번 알린다. `kiln status`로 어떤 검사가 어떤 도구로 도는지 확인한다.
 
 | 조건 | 명령 | 범위 | 훅 | check |
 |---|---|---|---|---|
@@ -55,6 +65,16 @@
 - Rust는 `//`로 시작하는 줄을 본다. 문서 주석(`///`, `//!`)은 막지 않는다.
 - 검사 끄기 표시는 `이유:`가 붙어 있어도 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
 - 통과하는 주석: `이유:`로 시작하는 주석, 도구 지시(`pragma`, `fmt:`, `type:` 타입 주석, `coding`), 첫 줄의 `#!`.
+
+### 저장소 밖 설정
+
+남의 저장소처럼 설정 파일을 고치기 곤란한 곳은 `~/.config/kiln/config.toml`에서 켠다. 저장소 안 설정보다 우선하고, 경로가 여러 개 걸리면 가장 깊은 것을 쓴다.
+
+```toml
+[[project]]
+path = "~/vllm"
+comments = false
+```
 
 파이썬 주석 찾기는 Python 표준 `tokenize`, `ast`와 결과가 같은지 대조한다. vllm과 pytorch의 9,608개 파일에서 불일치 0건이었다.
 

@@ -40,6 +40,20 @@ pub fn search_path() -> String {
     )
 }
 
+pub fn environments(dir: &Path, root: &Path, main_root: &Path) -> Vec<PathBuf> {
+    let mut found = vec![dir.join(".venv")];
+    if let Ok(rel) = dir.strip_prefix(root) {
+        found.push(main_root.join(rel).join(".venv"));
+    }
+    for var in ["VIRTUAL_ENV", "CONDA_PREFIX"] {
+        if let Some(active) = env::var_os(var).filter(|v| !v.is_empty()) {
+            found.push(PathBuf::from(active));
+        }
+    }
+    found.dedup();
+    found
+}
+
 pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
     env::split_paths(path)
         .map(|d| d.join(name))
@@ -85,8 +99,11 @@ pub fn plan(
         None => vec![".".into()],
     };
     if py.contains("[tool.ruff") && !sources.is_empty() {
-        match tool("ruff") {
-            Some((ruff, _)) => {
+        let ruff = tool("ruff")
+            .map(|(bin, _)| bin)
+            .or_else(|| find_on_path("ruff", path).map(|p| text(&p)));
+        match ruff {
+            Some(ruff) => {
                 let mut lint = vec![ruff.clone(), "check".into(), "--force-exclude".into()];
                 lint.extend(sources.iter().cloned());
                 checks.push(check("ruff check", lint));

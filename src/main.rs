@@ -1,6 +1,7 @@
 mod checks;
 mod comments;
 mod commit_msg;
+mod config;
 mod git;
 mod scope;
 mod state;
@@ -8,6 +9,7 @@ mod stats;
 
 use checks::Outcome;
 use comments::Kind;
+use config::Config;
 use scope::Baseline;
 use serde_json::{json, Value};
 use state::State;
@@ -26,6 +28,7 @@ const USAGE: &str = "사용:
   kiln check --all           프로젝트 전체 검사 (새 주석 검사 제외)
   kiln commit-msg <file>     커밋 메시지 형식 검사 (commit-msg)
   kiln hook start|stop       Claude Code 훅
+  kiln status                이 위치에서 어떤 검사가 도는지 보기
   kiln stats                 훅 기록 요약";
 
 struct Failure {
@@ -90,24 +93,27 @@ fn evaluate(
 ) -> Report {
     let path = checks::search_path();
     let main_root = git::main_worktree(root);
+    let config = Config::load();
     let mut report = Report::default();
+    if let Some(error) = &config.error {
+        report
+            .skipped
+            .push(format!("설정 파일 오류로 무시함 ({error})"));
+    }
     for dir in checks::projects(root, files) {
         let inside: Vec<PathBuf> = files
             .iter()
             .filter(|f| f.starts_with(&dir))
             .cloned()
             .collect();
-        if comments::forbids_comments(&dir) {
+        if comment_rule(&dir, root, &main_root, &config).0 {
             let found = comments::new_findings(root, &dir, &inside, baseline);
             if !found.is_empty() {
                 report.failures.extend(findings_failure(&dir, &found));
                 continue;
             }
         }
-        let mut venvs = vec![dir.join(".venv")];
-        if let Ok(rel) = dir.strip_prefix(root) {
-            venvs.push(main_root.join(rel).join(".venv"));
-        }
+        let venvs = checks::environments(&dir, root, &main_root);
         let scope = (!whole).then_some(inside.as_slice());
         let plan = checks::plan(&dir, scope, &venvs, &path, with_tests);
         for name in plan.missing {
@@ -140,6 +146,81 @@ fn evaluate(
         }
     }
     report
+}
+
+fn comment_rule(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> (bool, String) {
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Ok(rel) = dir.strip_prefix(root) {
+        dirs.push(main_root.join(rel));
+    }
+    if let Some(allowed) = config.comments(&dirs) {
+        let source = config
+            .source
+            .as_ref()
+            .map_or(String::new(), |p| p.display().to_string());
+        return (!allowed, source);
+    }
+    let local = comments::forbids_comments(dir);
+    let source = if dir.join("pyproject.toml").is_file() {
+        "pyproject.toml의 [tool.kiln]"
+    } else {
+        "Cargo.toml의 [package.metadata.kiln]"
+    };
+    (
+        local,
+        if local {
+            source.into()
+        } else {
+            "설정 없음".into()
+        },
+    )
+}
+
+fn status() -> ExitCode {
+    let cwd = env::current_dir().unwrap_or_default();
+    let Some(root) = git::toplevel(&cwd) else {
+        println!("git 저장소가 아니라 kiln이 아무것도 하지 않습니다");
+        return ExitCode::SUCCESS;
+    };
+    let config = Config::load();
+    println!("저장소: {}", root.display());
+    match (&config.source, &config.error) {
+        (_, Some(error)) => println!("설정 파일: 오류, 무시함 ({error})"),
+        (Some(source), None) => println!("설정 파일: {}", source.display()),
+        (None, None) => println!("설정 파일: 없음 ({})", Config::path().display()),
+    }
+    let Some(dir) = cwd
+        .ancestors()
+        .take_while(|d| d.starts_with(&root))
+        .find(|d| d.join("pyproject.toml").is_file() || d.join("Cargo.toml").is_file())
+    else {
+        println!("pyproject.toml이나 Cargo.toml이 없어 돌릴 검사가 없습니다");
+        return ExitCode::SUCCESS;
+    };
+    let main_root = git::main_worktree(&root);
+    println!("프로젝트: {}", dir.display());
+    let (on, source) = comment_rule(dir, &root, &main_root, &config);
+    println!(
+        "  새 주석, 검사 끄기 표시: {} ({source})",
+        if on { "막음" } else { "검사 안 함" }
+    );
+    let venvs = checks::environments(dir, &root, &main_root);
+    let plan = checks::plan(dir, None, &venvs, &checks::search_path(), true);
+    for check in &plan.checks {
+        let when = if matches!(check.name.as_str(), "pytest" | "cargo test") {
+            "check에서만"
+        } else {
+            "훅과 check"
+        };
+        println!("  {}: {} ({when})", check.name, check.argv[0]);
+    }
+    for name in &plan.missing {
+        println!("  {name}: 설정은 있지만 도구를 못 찾아 건너뜀");
+    }
+    if plan.checks.is_empty() && plan.missing.is_empty() {
+        println!("  설정된 검사 도구가 없습니다");
+    }
+    ExitCode::SUCCESS
 }
 
 fn session_files(dirty: &[PathBuf], snapshot: &HashMap<PathBuf, String>) -> Vec<(PathBuf, String)> {
@@ -194,8 +275,13 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
         "failed": failed,
         "skipped": report.skipped,
     });
-    let skip_note = (!report.skipped.is_empty())
-        .then(|| format!("실행하지 못해 건너뛴 검사: {}", report.skipped.join(", ")));
+    let skip_note = (!report.skipped.is_empty() && !state.noticed.exists()).then(|| {
+        let _ = fs::write(&state.noticed, "");
+        format!(
+            "실행하지 못해 건너뛴 검사: {} (이 대화에서는 다시 알리지 않음, 자세히: kiln status)",
+            report.skipped.join(", ")
+        )
+    });
 
     if report.failures.is_empty() {
         let _ = fs::write(&state.passed, &fingerprint);
@@ -344,6 +430,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("marks") => marks(rest),
+        Some("status") => status(),
         Some("--version") => {
             println!("kiln {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

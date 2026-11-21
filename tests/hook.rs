@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 struct Repo {
     root: PathBuf,
     state: PathBuf,
+    base: PathBuf,
 }
 
 impl Repo {
@@ -18,6 +19,7 @@ impl Repo {
         let repo = Repo {
             root,
             state: base.join("state"),
+            base,
         };
         repo.git(&["init", "-q"]);
         repo.write(manifest.0, manifest.1);
@@ -49,10 +51,26 @@ impl Repo {
         self.git(&["commit", "-qm", "c", "--allow-empty"]);
     }
 
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kiln"));
+        cmd.env("XDG_STATE_HOME", &self.state)
+            .env("XDG_CONFIG_HOME", self.base.join("config"))
+            .env_remove("VIRTUAL_ENV")
+            .env_remove("CONDA_PREFIX");
+        cmd
+    }
+
     fn hook(&self, mode: &str, session: &str) -> Option<Value> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_kiln"))
+        self.hook_with(mode, session, &[])
+    }
+
+    fn hook_with(&self, mode: &str, session: &str, envs: &[(&str, &Path)]) -> Option<Value> {
+        let mut cmd = self.command();
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
             .args(["hook", mode])
-            .env("XDG_STATE_HOME", &self.state)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -73,9 +91,9 @@ impl Repo {
     }
 
     fn kiln(&self, args: &[&str]) -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_kiln"))
+        let out = self
+            .command()
             .args(args)
-            .env("XDG_STATE_HOME", &self.state)
             .current_dir(&self.root)
             .output()
             .unwrap();
@@ -221,9 +239,9 @@ fn reports_checks_that_could_not_run() {
     );
     repo.hook("start", "s");
     repo.write("src/lib.rs", "pub fn f() {}\n");
-    let out = Command::new(env!("CARGO_BIN_EXE_kiln"))
+    let out = repo
+        .command()
         .args(["hook", "stop"])
-        .env("XDG_STATE_HOME", &repo.state)
         .env("HOME", repo.root.join("no-home"))
         .env("PATH", "/usr/bin:/bin")
         .current_dir(Path::new(&repo.root))
@@ -233,6 +251,18 @@ fn reports_checks_that_could_not_run() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("건너뛴 검사"), "{text}");
     assert!(text.contains("cargo fmt"), "{text}");
+
+    repo.write("src/lib.rs", "pub fn g() {}\n");
+    let again = repo
+        .command()
+        .args(["hook", "stop"])
+        .env("HOME", repo.root.join("no-home"))
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(&repo.root)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&again.stdout).trim().is_empty());
 }
 
 #[test]
@@ -276,4 +306,71 @@ fn commit_msg_rejects_bad_messages() {
     assert!(repo.kiln(&["commit-msg", "good"]).0);
     let (ok, err) = repo.kiln(&["commit-msg", "bad"]);
     assert!(!ok && err.contains("타입: 요약"), "{err}");
+}
+
+fn fake_tool(dir: &Path, name: &str, message: &str) {
+    fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\necho '{message}'\nexit 1\n")).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    fs::set_permissions(&path, perms).unwrap();
+}
+
+#[test]
+fn config_outside_the_repo_turns_on_the_comment_rule() {
+    let repo = Repo::new("config", ("pyproject.toml", "[project]\nname = \"x\"\n"));
+    repo.hook("start", "s");
+    repo.write("a.py", "x = 1  # 설명\n");
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    let config = repo.base.join("config/kiln");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("config.toml"),
+        format!(
+            "[[project]]\npath = \"{}\"\ncomments = false\n",
+            repo.root.display()
+        ),
+    )
+    .unwrap();
+    repo.write("a.py", "x = 1  # 설명 고침\n");
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(text.contains("a.py:1"), "{text}");
+}
+
+#[test]
+fn ruff_is_found_on_path_but_ty_needs_an_environment() {
+    let repo = Repo::new(
+        "path",
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[tool.ruff]\n\n[tool.ty]\n",
+        ),
+    );
+    let bin = repo.base.join("bin");
+    fake_tool(&bin, "ruff", "ruff 실패");
+    fake_tool(&bin, "ty", "ty 실패");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let home = repo.base.join("home");
+    let envs = [("PATH", Path::new(&path)), ("HOME", home.as_path())];
+    repo.hook_with("start", "s", &envs);
+    repo.write("a.py", "x = 1\n");
+    let out = repo.hook_with("stop", "s", &envs);
+    let text = reason(&out);
+    assert!(text.contains("ruff 실패"), "{text}");
+    let note = out.unwrap()["systemMessage"].to_string();
+    assert!(note.contains("ty"), "{note}");
+
+    let venv = repo.base.join("active-env");
+    fake_tool(&venv.join("bin"), "ty", "활성 환경의 ty 실패");
+    fs::remove_file(bin.join("ruff")).unwrap();
+    let envs = [
+        ("PATH", Path::new(&path)),
+        ("HOME", home.as_path()),
+        ("VIRTUAL_ENV", venv.as_path()),
+    ];
+    repo.write("a.py", "x = 2\n");
+    let text = reason(&repo.hook_with("stop", "s", &envs));
+    assert!(text.contains("활성 환경의 ty 실패"), "{text}");
 }
