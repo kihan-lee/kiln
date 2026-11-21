@@ -129,3 +129,7 @@ Claude Code (`~/.claude/settings.json`):
     scripts/check.sh     # 포맷, 린트, 테스트
 
 `v*` 태그를 올리면 릴리스 워크플로가 실행 파일을 빌드해 GitHub Release에 올린다.
+
+## 라이선스
+
+[MIT](LICENSE)
