@@ -148,9 +148,8 @@ pub fn classify(text: &str, line: usize) -> Option<Kind> {
         return Some(Kind::Suppression);
     }
     let body = segments.first().map_or("", String::as_str);
-    let allowed = (line == 1 && text.starts_with("#!"))
-        || body.starts_with("이유:")
-        || DIRECTIVES.iter().any(|d| body.starts_with(d));
+    let allowed =
+        (line == 1 && text.starts_with("#!")) || DIRECTIVES.iter().any(|d| body.starts_with(d));
     (!allowed).then_some(Kind::Comment)
 }
 
@@ -225,15 +224,10 @@ mod tests {
         assert_eq!(classify("# noqa", 3), Some(Kind::Suppression));
         assert_eq!(classify("# noqa: TID251", 3), Some(Kind::Suppression));
         assert_eq!(classify("# type: ignore[attr]", 3), Some(Kind::Suppression));
-        assert_eq!(
-            classify("# 이유: 외부 API 제약  # noqa: E501", 3),
-            Some(Kind::Suppression)
-        );
+        assert_eq!(classify("# 설명  # noqa: E501", 3), Some(Kind::Suppression));
         assert_eq!(classify("# ty: ignore", 3), Some(Kind::Suppression));
         assert_eq!(classify("# 설명", 3), Some(Kind::Comment));
         assert_eq!(classify("// 설명", 3), Some(Kind::Comment));
-        assert_eq!(classify("# 이유: 외부 API 제약", 3), None);
-        assert_eq!(classify("// 이유: 외부 API 제약", 3), None);
         assert_eq!(classify("#!/usr/bin/env python3", 1), None);
         assert_eq!(classify("#!/usr/bin/env python3", 2), Some(Kind::Comment));
         assert_eq!(classify("# fmt: off", 3), None);

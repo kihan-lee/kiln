@@ -156,19 +156,15 @@ fn checks_only_lines_added_after_session_start() {
 }
 
 #[test]
-fn blocks_suppressions_even_with_a_reason() {
+fn blocks_suppressions() {
     let repo = Repo::new("suppress", PY);
     repo.hook("start", "s");
-    repo.write(
-        "a.py",
-        "#!/usr/bin/env python3\nimport os  # noqa: F401\nx = 1  # 이유: 외부 API 제약\n",
-    );
+    repo.write("a.py", "#!/usr/bin/env python3\nimport os  # noqa: F401\n");
     let out = repo.hook("stop", "s");
     let text = reason(&out);
     assert!(text.contains("검사를 끄는 표시"), "{text}");
     assert!(text.contains("a.py:2"), "{text}");
     assert!(!text.contains("a.py:1"), "{text}");
-    assert!(!text.contains("a.py:3"), "{text}");
 }
 
 #[test]
@@ -301,17 +297,13 @@ fn check_base_compares_against_the_merge_base() {
 #[test]
 fn check_all_lists_existing_marks_without_failing() {
     let repo = Repo::new("all", PY);
-    repo.write(
-        "a.py",
-        "x = 1  # 예전 주석\nimport os  # noqa: F401\ny = 2  # 이유: 외부 API 제약\n",
-    );
+    repo.write("a.py", "x = 1  # 예전 주석\nimport os  # noqa: F401\n");
     repo.commit();
     let (ok, err) = repo.kiln(&["check", "--all"]);
     assert!(ok, "{err}");
     assert!(err.contains("기존 주석과 파일 맨 위 설명문 1건"), "{err}");
     assert!(err.contains("기존 검사 끄기 표시 1건"), "{err}");
     assert!(err.contains("a.py:1") && err.contains("a.py:2"), "{err}");
-    assert!(!err.contains("a.py:3"), "{err}");
 
     let plain = Repo::new("all-off", ("pyproject.toml", "[project]\nname = \"x\"\n"));
     plain.write("a.py", "x = 1  # 예전 주석\n");

@@ -63,7 +63,7 @@ fn findings_failure(dir: &Path, found: &[comments::Finding], existing: bool) -> 
             Kind::Comment,
             "comments",
             "주석과 파일 맨 위 설명문",
-            "주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다. 파일 맨 위 설명문은 쓰지 않습니다.",
+            "주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 파일 맨 위 설명문은 쓰지 않습니다.",
         ),
     ] {
         let hits: Vec<&str> = found
