@@ -2,9 +2,20 @@ use crate::scope::Baseline;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DIRECTIVES: [&str; 6] = ["pragma", "fmt:", "type:", "ruff:", "coding", "clang-format"];
-const SUPPRESSIONS: [&str; 8] = [
+const DIRECTIVES: [&str; 8] = [
+    "pragma",
+    "fmt:",
+    "type:",
+    "ruff:",
+    "coding",
+    "clang-format",
+    "shellcheck",
+    "yaml-language-server",
+];
+const SUPPRESSIONS: [&str; 10] = [
     "nolint",
+    "shellcheck disable",
+    "yamllint disable",
     "noqa",
     "type: ignore",
     "ty: ignore",
@@ -272,13 +283,108 @@ pub fn classify(text: &str, line: usize) -> Option<Kind> {
     (!allowed).then_some(Kind::Comment)
 }
 
-fn yaml_marks(src: &str) -> Vec<(usize, String)> {
-    src.lines()
-        .enumerate()
-        .map(|(i, l)| (i + 1, l.trim()))
-        .filter(|(_, l)| !l.starts_with('#') && l.contains(KUBE_LINTER_IGNORE))
-        .map(|(n, l)| (n, l.to_string()))
-        .collect()
+fn hash_comment_start(line: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    let mut chars = line.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('"') if c == '\\' => {
+                chars.next();
+            }
+            Some(_) => {}
+            None if c == '#' && prev.is_whitespace() => return Some(i),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == '\\' => {
+                chars.next();
+            }
+            None => {}
+        }
+        prev = c;
+    }
+    None
+}
+
+fn opens_block_scalar(code: &str) -> bool {
+    let last = code.trim_end().rsplit([' ', '\t']).next().unwrap_or("");
+    let mut chars = last.chars();
+    matches!(chars.next(), Some('|' | '>'))
+        && chars.all(|c| c == '-' || c == '+' || c.is_ascii_digit())
+        && (code.trim_end().len() == last.len()
+            || code.trim_end()[..code.trim_end().len() - last.len()]
+                .trim_end()
+                .ends_with([':', '-']))
+}
+
+fn heredoc_tag(code: &str) -> Option<String> {
+    let at = code.find("<<")?;
+    let rest = &code[at + 2..];
+    if rest.starts_with('<') {
+        return None;
+    }
+    let rest = rest.trim_start_matches('-').trim_start();
+    let tag: String = rest
+        .trim_start_matches(['\'', '"'])
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!tag.is_empty()).then_some(tag)
+}
+
+fn hash_marks(src: &str, yaml: bool) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut block: Option<usize> = None;
+    let mut heredoc: Option<String> = None;
+    for (i, line) in src.lines().enumerate() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        if let Some(tag) = &heredoc {
+            if trimmed == tag {
+                heredoc = None;
+            }
+            continue;
+        }
+        if let Some(parent) = block {
+            if trimmed.is_empty() || indent > parent {
+                continue;
+            }
+            block = None;
+        }
+        let start = hash_comment_start(line);
+        if let Some(start) = start {
+            found.push((i + 1, line[start..].to_string()));
+        }
+        let code = &line[..start.unwrap_or(line.len())];
+        if yaml {
+            if code.contains(KUBE_LINTER_IGNORE) {
+                found.push((i + 1, trimmed.to_string()));
+            }
+            if opens_block_scalar(code) {
+                block = Some(indent);
+            }
+        } else {
+            heredoc = heredoc_tag(code);
+        }
+    }
+    found
+}
+
+fn sql_marks(src: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    for (i, line) in src.lines().enumerate() {
+        let mut quoted = false;
+        let bytes = line.as_bytes();
+        for (j, &b) in bytes.iter().enumerate() {
+            if b == b'\'' {
+                quoted = !quoted;
+            } else if !quoted && b == b'-' && bytes.get(j + 1) == Some(&b'-') {
+                found.push((i + 1, line[j..].to_string()));
+                break;
+            }
+        }
+    }
+    found
 }
 
 pub fn marks(file: &Path) -> Vec<(usize, String)> {
@@ -287,7 +393,9 @@ pub fn marks(file: &Path) -> Vec<(usize, String)> {
         Some("py") => python_marks(&src),
         Some("rs") => rust_marks(&src),
         Some(x) if C_EXTS.contains(&x) => c_marks(&src),
-        Some("yaml" | "yml") => yaml_marks(&src),
+        Some("yaml" | "yml") => hash_marks(&src, true),
+        Some("sh" | "bash") => hash_marks(&src, false),
+        Some("sql") => sql_marks(&src),
         _ => Vec::new(),
     }
 }
@@ -328,10 +436,46 @@ mod tests {
     #[test]
     fn kube_linter_ignore_annotations_are_suppressions() {
         let src = "metadata:\n  # ignore-check.kube-linter.io/host-ipc\n  annotations:\n    ignore-check.kube-linter.io/host-ipc: \"MPS\"\n";
-        let found = super::yaml_marks(src);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].0, 4);
-        assert_eq!(classify(&found[0].1, 4), Some(Kind::Suppression));
+        let found = super::hash_marks(src, true);
+        let lines: Vec<usize> = found.iter().map(|(n, _)| *n).collect();
+        assert_eq!(lines, vec![2, 4]);
+        assert_eq!(classify(&found[1].1, 4), Some(Kind::Suppression));
+    }
+
+    fn hash_lines(src: &str, yaml: bool) -> Vec<usize> {
+        super::hash_marks(src, yaml)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
+    }
+
+    #[test]
+    fn yaml_comments_skip_quotes_and_block_scalars() {
+        let src = "# top\na: 1  # inline\nb: \"x # no\"\nc: 'y # no'\nd: e#f\nscript: |\n  # script line\n  echo hi\ne: 2 # after block\nlist:\n  - >-\n    # folded\n  - z\n";
+        assert_eq!(hash_lines(src, true), vec![1, 2, 9]);
+    }
+
+    #[test]
+    fn shell_comments_skip_heredocs_and_parameter_expansion() {
+        let src = "#!/bin/sh\n# why\necho \"$#\" ${#x} ${y#p}  # tail\ncat <<'EOF'\n# not a comment\nEOF\nx=1\n";
+        assert_eq!(hash_lines(src, false), vec![1, 2, 3]);
+        assert_eq!(classify("#!/bin/sh", 1), None);
+        assert_eq!(
+            classify("# shellcheck disable=SC2086", 4),
+            Some(Kind::Suppression)
+        );
+        assert_eq!(classify("# shellcheck source=lib.sh", 4), None);
+        assert_eq!(
+            classify("# yamllint disable-line rule:line-length", 4),
+            Some(Kind::Suppression)
+        );
+    }
+
+    #[test]
+    fn sql_comments_skip_strings() {
+        let src = "-- why\nselect '--no' from t; -- tail\nselect 1;\n";
+        let lines: Vec<usize> = super::sql_marks(src).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(lines, vec![1, 2]);
     }
 
     fn lines(src: &str) -> Vec<usize> {
