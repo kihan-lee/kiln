@@ -45,6 +45,7 @@
 | `[tool.pytest` | `pytest -q` (훅에서는 `-x` 추가) | 프로젝트 전체 | 설정 시 | O |
 | `Cargo.toml` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | 프로젝트 전체 | O | O |
 | `Cargo.toml` | `cargo test` | 프로젝트 전체 | 설정 시 | O |
+| `.clang-format` | `clang-format --dry-run --Werror` | 바뀐 CUDA, C, C++ 파일 | O | O |
 
 린트와 포맷은 새로 생기는 위반을 막는 것이 목적이라 바뀐 파일만 본다. 타입과 Rust 검사는 한 파일의 변경이 다른 파일을 깨뜨릴 수 있어 전체를 본다.
 
@@ -52,6 +53,9 @@
 
 - 파이썬: `.py`, `.pyi`, `pyproject.toml`, `uv.lock`, `ty.toml`
 - Rust: `.rs`, `Cargo.toml`, `Cargo.lock`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`
+- CUDA, C, C++ (`.cu`, `.cuh`, `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`): 커널을 고치면 결과가 달라지므로 pytest와 cargo 검사를 돌린다. ty는 돌리지 않는다.
+
+clang-format은 프로젝트 폴더에 `.clang-format`(또는 `_clang-format`)이 있을 때만 돌고, `PATH`에서 찾는다.
 
 ### 훅에서 테스트
 
@@ -104,8 +108,9 @@ exts = ["tla", "py"]
 - 새로 추가되거나 바뀐 줄만 본다. 원래 있던 주석은 건드리지 않는다.
 - 파이썬은 줄 전체 주석, 줄 끝 주석, 파일 맨 위 설명문을 본다. 문자열 안의 `#`은 주석이 아니다. 함수와 클래스의 설명문은 막지 않는다.
 - Rust는 `//`로 시작하는 줄을 본다. 문서 주석(`///`, `//!`)은 막지 않는다.
-- 검사 끄기 표시를 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
-- 통과하는 주석: 도구 지시(`pragma`, `fmt:`, `type:` 타입 주석, `coding`), 첫 줄의 `#!`.
+- CUDA, C, C++는 `//` 주석과 `/* */` 주석의 각 줄을 본다. 문자열, raw 문자열(`R"(...)"`), 문자 리터럴 안은 주석이 아니고, 숫자 구분자(`1'000`)도 처리한다. 문서 주석(`///`, `//!`, `/** */`, `/*! */`)은 막지 않는다.
+- 검사 끄기 표시를 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`, C 계열의 `NOLINT`, `#pragma nv_diag_suppress`, `#pragma diag_suppress`, `#pragma GCC diagnostic ignored`, `#pragma clang diagnostic ignored`, `#pragma warning(disable`. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
+- 통과하는 주석: 도구 지시(`pragma`, `fmt:`, `type:` 타입 주석, `coding`, `clang-format`), 첫 줄의 `#!`.
 
 ### 새 문서 파일과 규칙 파일
 
@@ -135,6 +140,10 @@ docs = ["docs"]
 파이썬 주석 찾기는 Python 표준 `tokenize`, `ast`와 결과가 같은지 대조한다. vllm과 pytorch의 9,608개 파일에서 불일치 0건이었다.
 
     python3 scripts/compare_python_comments.py target/release/kiln <디렉터리>...
+
+CUDA, C, C++ 주석 찾기는 clang 렉서(`-dump-raw-tokens`)와 대조한다. cutlass, llm.c, llama.cpp의 4,145개 파일에서 불일치 0건이었다.
+
+    python3 scripts/compare_c_comments.py target/release/kiln <디렉터리>...
 
 ### 커밋 메시지
 

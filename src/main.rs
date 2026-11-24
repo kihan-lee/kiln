@@ -159,7 +159,7 @@ fn evaluate(
         for name in plan.missing {
             report
                 .skipped
-                .push(format!("{name} ({}의 .venv에 없음)", dir.display()));
+                .push(format!("{name} ({}에서 찾지 못함)", dir.display()));
         }
         let mut to_run = plan.checks;
         match config::custom_checks(&dir) {
@@ -543,8 +543,7 @@ fn commit_msg(args: &[String]) -> ExitCode {
 
 fn marks(args: &[String]) -> ExitCode {
     for file in args {
-        let src = fs::read_to_string(file).unwrap_or_default();
-        let lines: Vec<String> = comments::python_marks(&src)
+        let lines: Vec<String> = comments::marks(Path::new(file))
             .into_iter()
             .map(|(n, _)| n.to_string())
             .collect();

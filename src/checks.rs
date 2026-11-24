@@ -132,6 +132,7 @@ pub fn plan(
         }),
     };
     let py_changed = touches(&["py", "pyi"], &["pyproject.toml", "uv.lock", "ty.toml"]);
+    let native_changed = touches(&crate::comments::C_EXTS, &[]);
     let rs_changed = touches(
         &["rs"],
         &[
@@ -172,7 +173,7 @@ pub fn plan(
             None => missing.push("ty".into()),
         }
     }
-    if tests != Tests::Skip && py_changed && py.contains("[tool.pytest") {
+    if tests != Tests::Skip && (py_changed || native_changed) && py.contains("[tool.pytest") {
         match tool("pytest") {
             Some((pytest, _)) => {
                 let mut argv = vec![pytest, "-q".into()];
@@ -184,7 +185,47 @@ pub fn plan(
             None => missing.push("pytest".into()),
         }
     }
-    if dir.join("Cargo.toml").is_file() && rs_changed {
+    let has_style = [".clang-format", "_clang-format"]
+        .iter()
+        .any(|n| dir.join(n).is_file());
+    if has_style {
+        let native: Vec<String> = match files {
+            Some(files) => files
+                .iter()
+                .filter(|f| {
+                    f.extension()
+                        .and_then(|x| x.to_str())
+                        .is_some_and(|x| crate::comments::C_EXTS.contains(&x))
+                        && f.is_file()
+                })
+                .filter_map(|f| f.strip_prefix(dir).ok())
+                .map(text)
+                .collect(),
+            None => {
+                let specs: Vec<String> = crate::comments::C_EXTS
+                    .iter()
+                    .map(|x| format!("*.{x}"))
+                    .collect();
+                let mut args = vec!["ls-files", "--"];
+                args.extend(specs.iter().map(String::as_str));
+                crate::git::git(dir, &args)
+                    .lines()
+                    .map(String::from)
+                    .collect()
+            }
+        };
+        if !native.is_empty() {
+            match find_on_path("clang-format", path) {
+                Some(bin) => {
+                    let mut argv = vec![text(&bin), "--dry-run".into(), "--Werror".into()];
+                    argv.extend(native);
+                    checks.push(check("clang-format", argv));
+                }
+                None => missing.push("clang-format".into()),
+            }
+        }
+    }
+    if dir.join("Cargo.toml").is_file() && (rs_changed || native_changed) {
         let cargo = find_on_path("cargo", path).map_or_else(|| "cargo".into(), |p| text(&p));
         checks.push(check(
             "cargo fmt",

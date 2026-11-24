@@ -483,6 +483,51 @@ fn docs_rule_is_off_without_the_setting() {
 }
 
 #[test]
+fn cuda_kernels_get_comment_checks_and_trigger_tests() {
+    let repo = Repo::new(
+        "cuda",
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[tool.pytest.ini_options]\n\n[tool.kiln]\ncomments = false\ntests = true\n",
+        ),
+    );
+    fake_tool(&repo.root.join(".venv/bin"), "pytest", "pytest 실패");
+    repo.hook("start", "s");
+    repo.write(
+        "csrc/k.cu",
+        "/// 문서\n__global__ void k() {} // 설명\n#pragma nv_diag_suppress 177\n",
+    );
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(text.contains("k.cu:2") && text.contains("k.cu:3"), "{text}");
+    assert!(!text.contains("k.cu:1"), "{text}");
+
+    repo.write("csrc/k.cu", "__global__ void k() {}\n");
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(text.contains("pytest 실패"), "{text}");
+}
+
+#[test]
+fn clang_format_runs_on_changed_files_when_configured() {
+    let repo = Repo::new("clang", ("pyproject.toml", "[project]\nname = \"x\"\n"));
+    repo.write(".clang-format", "BasedOnStyle: LLVM\n");
+    repo.commit();
+    let bin = repo.base.join("bin");
+    fake_tool(&bin, "clang-format", "clang-format 실패");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let envs = [("PATH", Path::new(&path))];
+    repo.hook_with("start", "s", &envs);
+    repo.write("a.py", "x = 1\n");
+    assert_eq!(repo.hook_with("stop", "s", &envs), None);
+
+    repo.write("k.cuh", "int f();\n");
+    let text = reason(&repo.hook_with("stop", "s", &envs));
+    assert!(
+        text.contains("clang-format 실패") && text.contains("k.cuh"),
+        "{text}"
+    );
+}
+
+#[test]
 fn ruff_is_found_on_path_but_ty_needs_an_environment() {
     let repo = Repo::new(
         "path",
