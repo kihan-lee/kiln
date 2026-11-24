@@ -95,7 +95,7 @@ fn evaluate(
     files: &[PathBuf],
     whole: bool,
     baseline: &Baseline,
-    with_tests: bool,
+    hook: bool,
 ) -> Report {
     let path = checks::search_path();
     let main_root = git::main_worktree(root);
@@ -125,7 +125,7 @@ fn evaluate(
         }
         let venvs = checks::environments(&dir, root, &main_root);
         let scope = (!whole).then_some(inside.as_slice());
-        let tests = if with_tests {
+        let tests = if !hook {
             Tests::Full
         } else if hook_tests(&dir, root, &main_root, &config).0 {
             Tests::FailFast
@@ -138,7 +138,14 @@ fn evaluate(
                 .skipped
                 .push(format!("{name} ({}의 .venv에 없음)", dir.display()));
         }
-        for check in plan.checks {
+        let mut to_run = plan.checks;
+        match config::custom_checks(&dir) {
+            Ok(list) => to_run.extend(checks::custom(scope, hook, &list)),
+            Err(error) => report
+                .skipped
+                .push(format!("직접 정한 검사 설정 오류로 무시함 ({error})")),
+        }
+        for check in to_run {
             match checks::run(&check, &dir, &path, TAIL_LINES) {
                 Outcome::Passed => {}
                 Outcome::Missing => {
@@ -250,10 +257,28 @@ fn status() -> ExitCode {
         };
         println!("  {}: {} ({when})", check.name, check.argv[0]);
     }
+    let custom = match config::custom_checks(dir) {
+        Ok(list) => list,
+        Err(error) => {
+            println!("  직접 정한 검사: 설정 오류로 무시함 ({error})");
+            Vec::new()
+        }
+    };
+    for c in &custom {
+        let when = if c.hook {
+            "훅과 check"
+        } else {
+            "check에서만"
+        };
+        let exts = c.exts.as_ref().map_or(String::new(), |e| {
+            format!(", {} 파일이 바뀔 때", e.join(", "))
+        });
+        println!("  {}: {} ({when}{exts})", c.name, c.run);
+    }
     for name in &plan.missing {
         println!("  {name}: 설정은 있지만 도구를 못 찾아 건너뜀");
     }
-    if plan.checks.is_empty() && plan.missing.is_empty() {
+    if plan.checks.is_empty() && plan.missing.is_empty() && custom.is_empty() {
         println!("  설정된 검사 도구가 없습니다");
     }
     ExitCode::SUCCESS
@@ -294,7 +319,7 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
         state,
         snapshot: &snapshot,
     };
-    let report = evaluate(root, &files, false, &baseline, false);
+    let report = evaluate(root, &files, false, &baseline, true);
 
     let failed: Vec<Value> = report
         .failures
@@ -407,7 +432,7 @@ fn check(args: &[String]) -> ExitCode {
         Some("--all") => (scope::tracked_files(&root), Baseline::Everything, true),
         _ => return usage(),
     };
-    let report = evaluate(&root, &files, whole, &baseline, true);
+    let report = evaluate(&root, &files, whole, &baseline, false);
     for note in &report.skipped {
         eprintln!("kiln: 건너뜀: {note}");
     }

@@ -398,6 +398,28 @@ fn hook_runs_tests_only_when_turned_on() {
 }
 
 #[test]
+fn runs_custom_checks_by_mode_and_extension() {
+    let repo = Repo::new(
+        "custom",
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[[tool.kiln.check]]\nname = \"spec\"\nrun = \"echo spec 실패; exit 1\"\nhook = true\nexts = [\"tla\"]\n\n[[tool.kiln.check]]\nname = \"e2e\"\nrun = \"echo e2e 실패; exit 1\"\n",
+        ),
+    );
+    repo.hook("start", "s");
+    repo.write("a.py", "x = 1\n");
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    repo.write("specs/Notify.tla", "---- MODULE Notify ----\n");
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(text.contains("spec 실패"), "{text}");
+
+    repo.git(&["add", "a.py"]);
+    let (ok, err) = repo.kiln(&["check", "--staged"]);
+    assert!(!ok && err.contains("e2e 실패"), "{err}");
+}
+
+#[test]
 fn ruff_is_found_on_path_but_ty_needs_an_environment() {
     let repo = Repo::new(
         "path",

@@ -74,6 +74,21 @@ pub enum Tests {
     FailFast,
 }
 
+pub fn custom(files: Option<&[PathBuf]>, hook: bool, list: &[crate::config::Custom]) -> Vec<Check> {
+    list.iter()
+        .filter(|c| !hook || c.hook)
+        .filter(|c| match (files, &c.exts) {
+            (Some(files), Some(exts)) => files.iter().any(|f| {
+                f.extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| exts.iter().any(|e| e.trim_start_matches('.') == x))
+            }),
+            _ => true,
+        })
+        .map(|c| check(&c.name, vec!["sh".into(), "-c".into(), c.run.clone()]))
+        .collect()
+}
+
 pub struct Plan {
     pub checks: Vec<Check>,
     pub missing: Vec<String>,

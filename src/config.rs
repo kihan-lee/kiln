@@ -88,6 +88,57 @@ impl Config {
     }
 }
 
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Custom {
+    pub name: String,
+    pub run: String,
+    #[serde(default)]
+    pub hook: bool,
+    pub exts: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default)]
+struct Kiln {
+    #[serde(default)]
+    check: Vec<Custom>,
+}
+
+#[derive(Deserialize, Default)]
+struct Holder {
+    #[serde(default)]
+    kiln: Kiln,
+}
+
+#[derive(Deserialize, Default)]
+struct Package {
+    #[serde(default)]
+    metadata: Holder,
+}
+
+#[derive(Deserialize, Default)]
+struct Manifest {
+    #[serde(default)]
+    tool: Holder,
+    #[serde(default)]
+    package: Package,
+}
+
+pub fn custom_checks(dir: &Path) -> Result<Vec<Custom>, String> {
+    let mut found = Vec::new();
+    for name in ["pyproject.toml", "Cargo.toml"] {
+        let text = fs::read_to_string(dir.join(name)).unwrap_or_default();
+        if !text.contains("kiln.check") {
+            continue;
+        }
+        let manifest: Manifest =
+            toml::from_str(&text).map_err(|e| format!("{name}: {}", e.message()))?;
+        found.extend(manifest.tool.kiln.check);
+        found.extend(manifest.package.metadata.kiln.check);
+    }
+    Ok(found)
+}
+
 pub fn local(dir: &Path, key: &str) -> Option<bool> {
     ["pyproject.toml", "Cargo.toml"].iter().find_map(|name| {
         fs::read_to_string(dir.join(name))
@@ -130,6 +181,29 @@ mod tests {
         assert_eq!(config.setting(&app, "comments"), Some(false));
         assert_eq!(config.setting(&app, "tests"), Some(true));
         assert_eq!(config.setting(&[PathBuf::from("/srv/web")], "tests"), None);
+    }
+
+    #[test]
+    fn reads_custom_checks_from_either_manifest() {
+        let base = std::env::temp_dir().join(format!("kiln-custom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join("Cargo.toml"),
+            "[package]\nname = \"x\"\n\n[[package.metadata.kiln.check]]\nname = \"tla\"\nrun = \"tlc a.tla\"\nhook = true\nexts = [\"tla\"]\n",
+        )
+        .unwrap();
+        let found = super::custom_checks(&base).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].hook && found[0].run == "tlc a.tla");
+
+        std::fs::write(
+            base.join("pyproject.toml"),
+            "[[tool.kiln.check]]\nname = \"e2e\"\nrun = \"x\"\nwhen = \"hook\"\n",
+        )
+        .unwrap();
+        let error = super::custom_checks(&base).err().unwrap_or_default();
+        assert!(error.contains("when"), "{error}");
     }
 
     #[test]
