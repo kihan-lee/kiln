@@ -49,7 +49,7 @@
 | `.yamllint` | `yamllint --no-warnings` | 바뀐 yaml 파일 | O | O |
 | 항상 | `shellcheck --severity=warning` | 바뀐 `.sh`, `.bash` 파일 | O | O |
 | 항상 | `kubeconform -strict -ignore-missing-schemas` | 바뀐 매니페스트를 그린 결과 | O | O |
-| `.kube-linter.yaml` | `kube-linter lint` | 바뀐 매니페스트를 그린 결과 | O | O |
+| 항상 | `kube-linter lint` | 바뀐 매니페스트를 그린 결과 | O | O |
 
 린트와 포맷은 새로 생기는 위반을 막는 것이 목적이라 바뀐 파일만 본다. 타입과 Rust 검사는 한 파일의 변경이 다른 파일을 깨뜨릴 수 있어 전체를 본다.
 
@@ -71,7 +71,7 @@ yamllint, shellcheck, kubeconform, kube-linter, helm, kubectl(또는 kustomize)�
 - `kustomization.yaml`이 있는 폴더 안의 파일: 그 폴더를 `kubectl kustomize`(`kustomize`가 있으면 `kustomize build`). kustomization이 그 파일이나 하위 폴더 이름을 적고 있지 않으면 속하지 않은 것으로 보고 위로 더 올라간다
 - 어디에도 속하지 않는 yaml 중 `apiVersion:`과 `kind:`가 있는 파일: 그 파일 그대로
 
-그린 결과를 kubeconform에 넘긴다. 그리기 자체가 실패해도 kubeconform 검사의 실패로 보고한다. kube-linter는 기본 규칙이 엄격해서 프로젝트 폴더에 `.kube-linter.yaml`을 두었을 때만 돈다. values 파일을 여러 개 쓰는 차트처럼 저장소마다 다른 규칙은 직접 정한 검사로 붙인다.
+그린 결과를 kubeconform에 넘긴다. 그리기 자체가 실패해도 kubeconform 검사의 실패로 보고한다. 같은 결과를 kube-linter에도 넘긴다. 프로젝트 폴더에 `.kube-linter.yaml`이 있으면 그 설정을 쓰고, 없으면 kube-linter 기본 규칙에서 `no-read-only-root-fs`와 `run-as-non-root`를 뺀다(보안 강화 규칙이라 일반 워크로드에서 지적이 너무 많다). 어떤 규칙을 쓸지는 `.kube-linter.yaml`에서 정하고, 특정 객체의 예외는 `ignore-check.kube-linter.io/<규칙>: "이유"` annotation으로 남긴다. 이 annotation은 검사 끄기 표시로 본다(아래). values 파일을 여러 개 쓰는 차트처럼 저장소마다 다른 규칙은 직접 정한 검사로 붙인다.
 
 ### 훅에서 테스트
 
@@ -139,7 +139,7 @@ exts = ["cu", "cuh", "cpp", "h"]
 - 파이썬은 줄 전체 주석, 줄 끝 주석, 파일 맨 위 설명문을 본다. 문자열 안의 `#`은 주석이 아니다. 함수와 클래스의 설명문은 막지 않는다.
 - Rust는 `//`로 시작하는 줄을 본다. 문서 주석(`///`, `//!`)은 막지 않는다.
 - CUDA, C, C++는 `//` 주석과 `/* */` 주석의 각 줄을 본다. 문자열, raw 문자열(`R"(...)"`), 문자 리터럴 안은 주석이 아니고, 숫자 구분자(`1'000`)도 처리한다. 문서 주석(`///`, `//!`, `/** */`, `/*! */`)은 막지 않는다.
-- 검사 끄기 표시를 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`, C 계열의 `NOLINT`, `#pragma nv_diag_suppress`, `#pragma diag_suppress`, `#pragma GCC diagnostic ignored`, `#pragma clang diagnostic ignored`, `#pragma warning(disable`. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
+- 검사 끄기 표시를 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`, C 계열의 `NOLINT`, `#pragma nv_diag_suppress`, `#pragma diag_suppress`, `#pragma GCC diagnostic ignored`, `#pragma clang diagnostic ignored`, `#pragma warning(disable`, yaml의 `ignore-check.kube-linter.io/` annotation. yaml은 이 annotation만 보고 주석은 보지 않는다. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
 - 통과하는 주석: 도구 지시(`pragma`, `fmt:`, `type:` 타입 주석, `coding`, `clang-format`), 첫 줄의 `#!`.
 
 ### 새 문서 파일과 규칙 파일

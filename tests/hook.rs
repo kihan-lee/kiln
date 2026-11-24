@@ -612,7 +612,11 @@ fn kubernetes_manifests_are_rendered_and_checked_by_what_changed() {
         "kubeconform",
         &format!("input=$(cat)\necho \"$input\" >> {l}/kubeconform\ncase \"$input\" in *bad*) echo 'kubeconform 실패'; exit 1;; esac"),
     );
-    script_tool(&bin, "kube-linter", &format!("cat >> {l}/kube-linter"));
+    script_tool(
+        &bin,
+        "kube-linter",
+        &format!("echo \"args: $*\" >> {l}/kube-linter\ncat >> {l}/kube-linter"),
+    );
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let home = repo.base.join("home");
     let envs = [("PATH", Path::new(&path)), ("HOME", home.as_path())];
@@ -640,6 +644,12 @@ fn kubernetes_manifests_are_rendered_and_checked_by_what_changed() {
         "{rendered}"
     );
     assert!(!rendered.contains("Job"), "{rendered}");
+    let linted = seen("kube-linter");
+    assert!(
+        linted.contains("--exclude no-read-only-root-fs,run-as-non-root")
+            && linted.contains("rendered app"),
+        "{linted}"
+    );
 
     repo.write(
         "app/jobs/job.yaml",
@@ -650,7 +660,6 @@ fn kubernetes_manifests_are_rendered_and_checked_by_what_changed() {
         text.contains("kubeconform 실패") && text.contains("app/jobs/job.yaml"),
         "{text}"
     );
-    assert_eq!(seen("kube-linter"), "");
 
     repo.write(".kube-linter.yaml", "checks: {}\n");
     repo.write(
@@ -658,9 +667,36 @@ fn kubernetes_manifests_are_rendered_and_checked_by_what_changed() {
         "apiVersion: batch/v1\nkind: Job\nspec: {}\n",
     );
     assert_eq!(repo.hook_with("stop", "s", &envs), None);
+    let linted = seen("kube-linter");
     assert!(
-        seen("kube-linter").contains("kind: Job"),
-        "{}",
-        seen("kube-linter")
+        linted.contains("--config .kube-linter.yaml") && linted.contains("kind: Job"),
+        "{linted}"
     );
+}
+
+#[test]
+fn new_kube_linter_ignore_annotations_are_blocked_like_noqa() {
+    let repo = Repo::new("k8s-ignore", (".yamllint.yaml", "extends: default\n"));
+    repo.write("kiln.toml", "comments = false\n");
+    repo.write(
+        "job.yaml",
+        "apiVersion: batch/v1\nkind: Job\nmetadata:\n  annotations:\n    ignore-check.kube-linter.io/host-pid: \"기존\"\n",
+    );
+    repo.commit();
+    let home = repo.base.join("home");
+    let envs = [
+        ("PATH", Path::new("/usr/bin:/bin")),
+        ("HOME", home.as_path()),
+    ];
+    repo.hook_with("start", "s", &envs);
+    repo.write(
+        "job.yaml",
+        "apiVersion: batch/v1\nkind: Job\nmetadata:\n  annotations:\n    ignore-check.kube-linter.io/host-pid: \"기존\"\n    ignore-check.kube-linter.io/host-ipc: \"MPS\"\n",
+    );
+    let text = reason(&repo.hook_with("stop", "s", &envs));
+    assert!(text.contains("job.yaml:6"), "{text}");
+    assert!(!text.contains("job.yaml:5"), "{text}");
+
+    let (ok, out) = repo.kiln(&["check", "--all"]);
+    assert!(out.contains("job.yaml:5"), "{ok} {out}");
 }

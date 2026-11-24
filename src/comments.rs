@@ -21,6 +21,7 @@ const C_SUPPRESSIONS: [&str; 5] = [
     "#pragma clang diagnostic ignored",
     "#pragma warning(disable",
 ];
+const KUBE_LINTER_IGNORE: &str = "ignore-check.kube-linter.io/";
 pub const C_EXTS: [&str; 8] = ["cu", "cuh", "c", "cc", "cpp", "cxx", "h", "hpp"];
 
 #[derive(Debug, PartialEq)]
@@ -247,6 +248,9 @@ pub fn c_marks(src: &str) -> Vec<(usize, String)> {
 }
 
 pub fn classify(text: &str, line: usize) -> Option<Kind> {
+    if text.contains(KUBE_LINTER_IGNORE) {
+        return Some(Kind::Suppression);
+    }
     let pragma = C_SUPPRESSIONS.iter().any(|p| text.starts_with(p));
     if pragma || text.starts_with("#[") || text.starts_with("#![") {
         return Some(Kind::Suppression);
@@ -268,12 +272,22 @@ pub fn classify(text: &str, line: usize) -> Option<Kind> {
     (!allowed).then_some(Kind::Comment)
 }
 
+fn yaml_marks(src: &str) -> Vec<(usize, String)> {
+    src.lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l.trim()))
+        .filter(|(_, l)| !l.starts_with('#') && l.contains(KUBE_LINTER_IGNORE))
+        .map(|(n, l)| (n, l.to_string()))
+        .collect()
+}
+
 pub fn marks(file: &Path) -> Vec<(usize, String)> {
     let src = fs::read_to_string(file).unwrap_or_default();
     match file.extension().and_then(|x| x.to_str()) {
         Some("py") => python_marks(&src),
         Some("rs") => rust_marks(&src),
         Some(x) if C_EXTS.contains(&x) => c_marks(&src),
+        Some("yaml" | "yml") => yaml_marks(&src),
         _ => Vec::new(),
     }
 }
@@ -310,6 +324,15 @@ pub fn new_findings(
 #[cfg(test)]
 mod tests {
     use super::{c_marks, classify, python_marks, rust_marks, Kind};
+
+    #[test]
+    fn kube_linter_ignore_annotations_are_suppressions() {
+        let src = "metadata:\n  # ignore-check.kube-linter.io/host-ipc\n  annotations:\n    ignore-check.kube-linter.io/host-ipc: \"MPS\"\n";
+        let found = super::yaml_marks(src);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, 4);
+        assert_eq!(classify(&found[0].1, 4), Some(Kind::Suppression));
+    }
 
     fn lines(src: &str) -> Vec<usize> {
         python_marks(src).into_iter().map(|(n, _)| n).collect()

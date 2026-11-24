@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub const YAMLLINT: [&str; 3] = [".yamllint", ".yamllint.yaml", ".yamllint.yml"];
 const KUBE_LINTER: [&str; 2] = [".kube-linter.yaml", ".kube-linter.yml"];
+const LINT_DEFAULT: &str = "--exclude no-read-only-root-fs,run-as-non-root";
 const KUSTOMIZATION: [&str; 3] = ["kustomization.yaml", "kustomization.yml", "Kustomization"];
 const YAML: [&str; 2] = ["yaml", "yml"];
 const SHELL: [&str; 2] = ["sh", "bash"];
@@ -12,7 +13,8 @@ const SHELL: [&str; 2] = ["sh", "bash"];
 const RENDER: &str = r#"tool=$1
 cache=$2
 kustomize=$3
-shift 3
+lint=$4
+shift 4
 mkdir -p "$cache"
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT
@@ -28,7 +30,7 @@ while [ $# -gt 0 ]; do
   esac || { echo "$target: 그리기 실패"; cat "$err"; fail=1; continue; }
   case $tool in
     kubeconform) res=$(printf '%s\n' "$out" | kubeconform -strict -ignore-missing-schemas -cache "$cache" - 2>&1) ;;
-    kube-linter) res=$(printf '%s\n' "$out" | kube-linter lint - 2>&1) ;;
+    kube-linter) res=$(printf '%s\n' "$out" | kube-linter lint $lint - 2>&1) ;;
   esac || { echo "$target:"; echo "$res"; fail=1; }
 done
 exit $fail
@@ -212,11 +214,11 @@ pub fn plan(
     if targets.is_empty() {
         return;
     }
-    let mut tools = vec!["kubeconform"];
-    if has(dir, &KUBE_LINTER) {
-        tools.push("kube-linter");
-    }
-    for name in tools {
+    let lint = KUBE_LINTER
+        .iter()
+        .find(|n| dir.join(n).is_file())
+        .map_or(LINT_DEFAULT.to_string(), |n| format!("--config {n}"));
+    for name in ["kubeconform", "kube-linter"] {
         let Some(bin) = found(name) else {
             missing.push(name.into());
             continue;
@@ -226,6 +228,7 @@ pub fn plan(
             .to_vec();
         argv.push(cache_dir());
         argv.push(kustomize.unwrap_or("kubectl kustomize").into());
+        argv.push(lint.clone());
         argv.extend(targets.iter().cloned());
         let shown: Vec<&str> = targets
             .iter()
