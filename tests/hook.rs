@@ -965,3 +965,24 @@ fn files_another_session_names_in_a_script_are_left_to_it() {
     let theirs = reason(&repo.hook("stop", "theirs"));
     assert!(theirs.contains("other.py"), "{theirs}");
 }
+
+#[test]
+fn relative_paths_after_cd_in_another_sessions_command_are_left_to_it() {
+    let repo = Repo::new("foreign-cd", PY);
+    repo.write("other.py", "y = 2\n");
+    repo.commit();
+    let input = format!(
+        r#"{{"command":"cd {}; sed -i s/2/3/ other.py"}}"#,
+        repo.root.display()
+    );
+    repo.hook("start", "mine");
+    repo.track("PreToolUse", "mine", "t1", None);
+    repo.track_input("PreToolUse", "theirs", "t2", &repo.base, &input);
+    repo.write("other.py", "y = 3  # 다른 세션의 주석\n");
+    repo.track_input("PostToolUse", "theirs", "t2", &repo.base, &input);
+    repo.write("mine.py", "x = 1  # 이 세션의 주석\n");
+    repo.track("PostToolUse", "mine", "t1", None);
+    let text = reason(&repo.hook("stop", "mine"));
+    assert!(text.contains("mine.py"), "{text}");
+    assert!(!text.contains("other.py"), "{text}");
+}

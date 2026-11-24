@@ -553,24 +553,37 @@ fn track(cwd: &Path, session: &str, base: &Path, payload: &Value) {
         }
     }
     let mut claimed = named;
-    claimed.extend(mentioned_files(cwd, &payload["tool_input"]));
+    let bases = session_roots(cwd, session, base);
+    claimed.extend(mentioned_files(cwd, &bases, &payload["tool_input"]));
     state::add_named(base, session, &claimed);
 }
 
-fn mentioned_files(cwd: &Path, input: &Value) -> Vec<PathBuf> {
+fn mentioned_files(cwd: &Path, bases: &[PathBuf], input: &Value) -> Vec<PathBuf> {
     let home = env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let mut found: Vec<PathBuf> = Vec::new();
     for key in ["command", "code"] {
         let Some(text) = input[key].as_str() else {
             continue;
         };
-        let tokens = text.split(|c: char| c.is_whitespace() || "\"'`()[]{};,=|&<>$".contains(c));
-        for token in tokens.filter(|t| t.contains('/') || t.contains('.')) {
-            let path = match token.strip_prefix("~/") {
-                Some(rest) => home.join(rest),
-                None => cwd.join(token),
+        let tokens: Vec<&str> = text
+            .split(|c: char| c.is_whitespace() || "\"'`()[]{};,=|&<>$".contains(c))
+            .filter(|t| t.contains('/') || t.contains('.'))
+            .collect();
+        let mut dirs: Vec<PathBuf> = vec![cwd.to_path_buf()];
+        dirs.extend(bases.iter().cloned());
+        dirs.extend(
+            tokens
+                .iter()
+                .map(|t| cwd.join(t))
+                .filter(|p| p.is_absolute() && p.is_dir()),
+        );
+        for token in &tokens {
+            let candidates: Vec<PathBuf> = match token.strip_prefix("~/") {
+                Some(rest) => vec![home.join(rest)],
+                None if token.starts_with('/') => vec![PathBuf::from(token)],
+                None => dirs.iter().map(|d| d.join(token)).collect(),
             };
-            if path.is_file() {
+            for path in candidates.into_iter().filter(|p| p.is_file()) {
                 let path = resolve(&path);
                 if !found.contains(&path) {
                     found.push(path);
