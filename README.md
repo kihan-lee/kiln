@@ -42,11 +42,30 @@
 | `[tool.ruff` | `ruff check` | 바뀐 `.py` 파일 | O | O |
 | `[tool.ruff.format]` | `ruff format --check` | 바뀐 `.py` 파일 | O | O |
 | `[tool.ty` | `ty check` | 프로젝트 전체 | O | O |
-| `[tool.pytest` | `pytest -q` | 프로젝트 전체 | | O |
+| `[tool.pytest` | `pytest -q` (훅에서는 `-x` 추가) | 프로젝트 전체 | 설정 시 | O |
 | `Cargo.toml` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | 프로젝트 전체 | O | O |
-| `Cargo.toml` | `cargo test` | 프로젝트 전체 | | O |
+| `Cargo.toml` | `cargo test` | 프로젝트 전체 | 설정 시 | O |
 
-린트와 포맷은 새로 생기는 위반을 막는 것이 목적이라 바뀐 파일만 본다. 타입과 Rust 검사는 한 파일의 변경이 다른 파일을 깨뜨릴 수 있어 전체를 본다. 테스트는 시간이 걸려 훅에서는 돌리지 않는다.
+린트와 포맷은 새로 생기는 위반을 막는 것이 목적이라 바뀐 파일만 본다. 타입과 Rust 검사는 한 파일의 변경이 다른 파일을 깨뜨릴 수 있어 전체를 본다.
+
+전체를 보는 검사(ty, pytest, cargo)는 그 프로젝트의 코드나 설정 파일이 바뀌었을 때만 돈다. 문서만 바뀌면 건너뛴다. 지워진 파일도 바뀐 것으로 친다. `--all`은 항상 전부 돈다.
+
+- 파이썬: `.py`, `.pyi`, `pyproject.toml`, `uv.lock`, `ty.toml`
+- Rust: `.rs`, `Cargo.toml`, `Cargo.lock`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`
+
+### 훅에서 테스트
+
+테스트는 시간이 걸려 훅에서는 기본으로 돌리지 않는다. 빠른 테스트를 가진 프로젝트는 켤 수 있다. 훅에서는 첫 실패에서 멈춰(`pytest -x`) 바로 돌려준다.
+
+    # pyproject.toml
+    [tool.kiln]
+    tests = true
+
+    # Cargo.toml
+    [package.metadata.kiln]
+    tests = true
+
+Claude Code 훅의 `timeout`(위 예시는 600초)보다 오래 걸리는 테스트는 켜지 않는다.
 
 ### 주석과 검사 끄기 표시
 
@@ -68,12 +87,13 @@
 
 ### 저장소 밖 설정
 
-남의 저장소처럼 설정 파일을 고치기 곤란한 곳은 `~/.config/kiln/config.toml`에서 켠다. 저장소 안 설정보다 우선하고, 경로가 여러 개 걸리면 가장 깊은 것을 쓴다.
+남의 저장소처럼 설정 파일을 고치기 곤란한 곳은 `~/.config/kiln/config.toml`에서 켠다. 저장소 안 설정보다 우선하고, 경로가 여러 개 걸리면 그 설정을 적은 것 중 가장 깊은 것을 쓴다.
 
 ```toml
 [[project]]
 path = "~/vllm"
 comments = false
+tests = true
 ```
 
 파이썬 주석 찾기는 Python 표준 `tokenize`, `ast`와 결과가 같은지 대조한다. vllm과 pytorch의 9,608개 파일에서 불일치 0건이었다.

@@ -7,7 +7,7 @@ mod scope;
 mod state;
 mod stats;
 
-use checks::Outcome;
+use checks::{Outcome, Tests};
 use comments::Kind;
 use config::Config;
 use scope::Baseline;
@@ -125,7 +125,14 @@ fn evaluate(
         }
         let venvs = checks::environments(&dir, root, &main_root);
         let scope = (!whole).then_some(inside.as_slice());
-        let plan = checks::plan(&dir, scope, &venvs, &path, with_tests);
+        let tests = if with_tests {
+            Tests::Full
+        } else if hook_tests(&dir, root, &main_root, &config).0 {
+            Tests::FailFast
+        } else {
+            Tests::Skip
+        };
+        let plan = checks::plan(&dir, scope, &venvs, &path, tests);
         for name in plan.missing {
             report
                 .skipped
@@ -158,32 +165,41 @@ fn evaluate(
     report
 }
 
-fn comment_rule(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> (bool, String) {
+fn rule(
+    dir: &Path,
+    root: &Path,
+    main_root: &Path,
+    config: &Config,
+    key: &str,
+) -> Option<(bool, String)> {
     let mut dirs = vec![dir.to_path_buf()];
     if let Ok(rel) = dir.strip_prefix(root) {
         dirs.push(main_root.join(rel));
     }
-    if let Some(allowed) = config.comments(&dirs) {
+    if let Some(value) = config.setting(&dirs, key) {
         let source = config
             .source
             .as_ref()
             .map_or(String::new(), |p| p.display().to_string());
-        return (!allowed, source);
+        return Some((value, source));
     }
-    let local = comments::forbids_comments(dir);
     let source = if dir.join("pyproject.toml").is_file() {
         "pyproject.toml의 [tool.kiln]"
     } else {
         "Cargo.toml의 [package.metadata.kiln]"
     };
-    (
-        local,
-        if local {
-            source.into()
-        } else {
-            "설정 없음".into()
-        },
-    )
+    config::local(dir, key).map(|value| (value, source.into()))
+}
+
+fn comment_rule(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> (bool, String) {
+    match rule(dir, root, main_root, config, "comments") {
+        Some((allowed, source)) => (!allowed, source),
+        None => (false, "설정 없음".into()),
+    }
+}
+
+fn hook_tests(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> (bool, String) {
+    rule(dir, root, main_root, config, "tests").unwrap_or((false, "설정 없음".into()))
 }
 
 fn status() -> ExitCode {
@@ -215,9 +231,19 @@ fn status() -> ExitCode {
         if on { "막음" } else { "검사 안 함" }
     );
     let venvs = checks::environments(dir, &root, &main_root);
-    let plan = checks::plan(dir, None, &venvs, &checks::search_path(), true);
+    let (tests_in_hook, tests_source) = hook_tests(dir, &root, &main_root, &config);
+    println!(
+        "  훅에서 테스트: {} ({tests_source})",
+        if tests_in_hook {
+            "돌림"
+        } else {
+            "안 돌림"
+        }
+    );
+    let plan = checks::plan(dir, None, &venvs, &checks::search_path(), Tests::Full);
     for check in &plan.checks {
-        let when = if matches!(check.name.as_str(), "pytest" | "cargo test") {
+        let is_test = matches!(check.name.as_str(), "pytest" | "cargo test");
+        let when = if is_test && !tests_in_hook {
             "check에서만"
         } else {
             "훅과 check"

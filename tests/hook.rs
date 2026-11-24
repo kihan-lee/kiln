@@ -354,6 +354,50 @@ fn config_outside_the_repo_turns_on_the_comment_rule() {
 }
 
 #[test]
+fn whole_project_checks_wait_for_code_changes() {
+    let repo = Repo::new(
+        "gate",
+        ("pyproject.toml", "[project]\nname = \"x\"\n\n[tool.ty]\n"),
+    );
+    repo.write("b.py", "y = 1\n");
+    repo.commit();
+    fake_tool(&repo.root.join(".venv/bin"), "ty", "ty 실패");
+    repo.hook("start", "s");
+    repo.write("notes.md", "설계 메모\n");
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    repo.write("a.py", "x = 1\n");
+    assert!(reason(&repo.hook("stop", "s")).contains("ty 실패"));
+
+    repo.hook("start", "t");
+    fs::remove_file(repo.root.join("b.py")).unwrap();
+    assert!(reason(&repo.hook("stop", "t")).contains("ty 실패"));
+}
+
+#[test]
+fn hook_runs_tests_only_when_turned_on() {
+    let repo = Repo::new(
+        "tests",
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n\n[tool.pytest.ini_options]\n",
+        ),
+    );
+    fake_tool(&repo.root.join(".venv/bin"), "pytest", "pytest 실패");
+    repo.hook("start", "s");
+    repo.write("a.py", "x = 1\n");
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    repo.write(
+        "pyproject.toml",
+        "[project]\nname = \"x\"\n\n[tool.pytest.ini_options]\n\n[tool.kiln]\ntests = true\n",
+    );
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(text.contains("pytest 실패"), "{text}");
+    assert!(text.contains("-q -x"), "{text}");
+}
+
+#[test]
 fn ruff_is_found_on_path_but_ty_needs_an_environment() {
     let repo = Repo::new(
         "path",

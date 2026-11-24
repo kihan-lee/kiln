@@ -67,6 +67,13 @@ fn check(name: &str, argv: Vec<String>) -> Check {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tests {
+    Skip,
+    Full,
+    FailFast,
+}
+
 pub struct Plan {
     pub checks: Vec<Check>,
     pub missing: Vec<String>,
@@ -77,7 +84,7 @@ pub fn plan(
     files: Option<&[PathBuf]>,
     venvs: &[PathBuf],
     path: &str,
-    with_tests: bool,
+    tests: Tests,
 ) -> Plan {
     let mut checks = Vec::new();
     let mut missing = Vec::new();
@@ -98,6 +105,28 @@ pub fn plan(
             .collect(),
         None => vec![".".into()],
     };
+    let touches = |exts: &[&str], names: &[&str]| match files {
+        None => true,
+        Some(files) => files.iter().any(|f| {
+            f.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| exts.contains(&x))
+                || f.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| names.contains(&n))
+        }),
+    };
+    let py_changed = touches(&["py", "pyi"], &["pyproject.toml", "uv.lock", "ty.toml"]);
+    let rs_changed = touches(
+        &["rs"],
+        &[
+            "Cargo.toml",
+            "Cargo.lock",
+            "clippy.toml",
+            "rustfmt.toml",
+            "rust-toolchain.toml",
+        ],
+    );
     if py.contains("[tool.ruff") && !sources.is_empty() {
         let ruff = tool("ruff")
             .map(|(bin, _)| bin)
@@ -117,7 +146,7 @@ pub fn plan(
             None => missing.push("ruff".into()),
         }
     }
-    if py.contains("[tool.ty") {
+    if py.contains("[tool.ty") && py_changed {
         match tool("ty") {
             Some((ty, venv)) => {
                 checks.push(check(
@@ -128,13 +157,19 @@ pub fn plan(
             None => missing.push("ty".into()),
         }
     }
-    if with_tests && py.contains("[tool.pytest") {
+    if tests != Tests::Skip && py_changed && py.contains("[tool.pytest") {
         match tool("pytest") {
-            Some((pytest, _)) => checks.push(check("pytest", vec![pytest, "-q".into()])),
+            Some((pytest, _)) => {
+                let mut argv = vec![pytest, "-q".into()];
+                if tests == Tests::FailFast {
+                    argv.push("-x".into());
+                }
+                checks.push(check("pytest", argv));
+            }
             None => missing.push("pytest".into()),
         }
     }
-    if dir.join("Cargo.toml").is_file() {
+    if dir.join("Cargo.toml").is_file() && rs_changed {
         let cargo = find_on_path("cargo", path).map_or_else(|| "cargo".into(), |p| text(&p));
         checks.push(check(
             "cargo fmt",
@@ -147,7 +182,7 @@ pub fn plan(
                 .chain(clippy.map(String::from))
                 .collect(),
         ));
-        if with_tests {
+        if tests != Tests::Skip {
             checks.push(check("cargo test", vec![cargo, "test".into(), "-q".into()]));
         }
     }
