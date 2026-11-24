@@ -433,7 +433,7 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
     if count > MAX_BLOCKS {
         let _ = fs::remove_file(&state.blocks);
         state.log(with_event(base, "giveup"));
-        let message = format!("표준 검사가 {MAX_BLOCKS}번 연속 실패한 채 답변이 끝났습니다");
+        let message = format!("kiln 검사가 {MAX_BLOCKS}번 연속 실패한 채 답변이 끝났습니다");
         println!("{}", json!({ "systemMessage": message }));
         return;
     }
@@ -441,7 +441,7 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
     state.log(with_event(base, "block"));
     let reports: Vec<&str> = report.failures.iter().map(|f| f.report.as_str()).collect();
     let reason = format!(
-        "표준 검사가 실패했습니다. 원인을 고친 뒤 끝내세요. 검사를 끄거나 규칙을 무시하는 표시로 넘기지 마세요.\n\n{}",
+        "kiln 검사가 실패했습니다. 원인을 고친 뒤 끝내세요. 검사를 끄거나 규칙을 무시하는 표시로 넘기지 마세요. 정당한 예외라고 판단되면 넘기지 말고 사용자에게 먼저 확인하세요.\n\n{}",
         reports.join("\n\n")
     );
     let mut out = json!({ "decision": "block", "reason": reason });
