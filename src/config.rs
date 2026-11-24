@@ -16,6 +16,7 @@ struct Entry {
     path: String,
     comments: Option<bool>,
     tests: Option<bool>,
+    docs: Option<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -70,19 +71,31 @@ impl Config {
         }
     }
 
-    pub fn setting(&self, dirs: &[PathBuf], key: &str) -> Option<bool> {
+    fn matching<'a>(&'a self, dirs: &[PathBuf]) -> impl Iterator<Item = &'a (PathBuf, Entry)> {
         let dirs: Vec<PathBuf> = dirs
             .iter()
             .map(|d| fs::canonicalize(d).unwrap_or_else(|_| d.clone()))
             .collect();
+        self.entries
+            .iter()
+            .filter(move |(base, _)| dirs.iter().any(|d| d.starts_with(base)))
+    }
+
+    pub fn docs(&self, dirs: &[PathBuf]) -> Option<Vec<String>> {
+        self.matching(dirs)
+            .filter(|(_, e)| e.docs.is_some())
+            .max_by_key(|(base, _)| base.components().count())
+            .and_then(|(_, e)| e.docs.clone())
+    }
+
+    pub fn setting(&self, dirs: &[PathBuf], key: &str) -> Option<bool> {
         let value = |e: &Entry| match key {
             "comments" => e.comments,
             "tests" => e.tests,
             _ => None,
         };
-        self.entries
-            .iter()
-            .filter(|(base, e)| value(e).is_some() && dirs.iter().any(|d| d.starts_with(base)))
+        self.matching(dirs)
+            .filter(|(_, e)| value(e).is_some())
             .max_by_key(|(base, _)| base.components().count())
             .and_then(|(_, e)| value(e))
     }
@@ -102,6 +115,7 @@ pub struct Custom {
 struct Kiln {
     #[serde(default)]
     check: Vec<Custom>,
+    docs: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -124,19 +138,29 @@ struct Manifest {
     package: Package,
 }
 
-pub fn custom_checks(dir: &Path) -> Result<Vec<Custom>, String> {
-    let mut found = Vec::new();
+fn read_kiln(dir: &Path) -> Result<Kiln, String> {
+    let mut found = Kiln::default();
     for name in ["pyproject.toml", "Cargo.toml"] {
         let text = fs::read_to_string(dir.join(name)).unwrap_or_default();
-        if !text.contains("kiln.check") {
+        if !text.contains("kiln") {
             continue;
         }
         let manifest: Manifest =
             toml::from_str(&text).map_err(|e| format!("{name}: {}", e.message()))?;
-        found.extend(manifest.tool.kiln.check);
-        found.extend(manifest.package.metadata.kiln.check);
+        for kiln in [manifest.tool.kiln, manifest.package.metadata.kiln] {
+            found.check.extend(kiln.check);
+            found.docs = found.docs.or(kiln.docs);
+        }
     }
     Ok(found)
+}
+
+pub fn custom_checks(dir: &Path) -> Result<Vec<Custom>, String> {
+    read_kiln(dir).map(|k| k.check)
+}
+
+pub fn local_docs(dir: &Path) -> Option<Vec<String>> {
+    read_kiln(dir).ok().and_then(|k| k.docs)
 }
 
 pub fn local(dir: &Path, key: &str) -> Option<bool> {

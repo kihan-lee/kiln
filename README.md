@@ -107,6 +107,19 @@ exts = ["tla", "py"]
 - 검사 끄기 표시를 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
 - 통과하는 주석: 도구 지시(`pragma`, `fmt:`, `type:` 타입 주석, `coding`), 첫 줄의 `#!`.
 
+### 새 문서 파일과 규칙 파일
+
+프로젝트 설정에 `docs`(새 문서 파일을 둘 수 있는 경로)를 적으면 켜진다.
+
+    # pyproject.toml (Cargo.toml에서는 [package.metadata.kiln])
+    [tool.kiln]
+    docs = ["docs", "README.md", "CHANGELOG.md"]
+
+- 허용 경로 밖에 새로 생긴 `.md` 파일을 막는다. 에이전트가 요청받지 않은 작업 메모, 요약 문서를 쌓는 것을 막기 위해서다. 이미 있던 문서를 고치는 것은 막지 않는다.
+- 규칙 파일(`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude/` 아래의 `.md`)은 막지 않는다. 대신 훅에서 바뀐 것을 한 번 알려, 그 내용을 검사로 옮길 수 있는지 먼저 확인하게 한다. 같은 내용으로는 다시 막지 않는다.
+- 규칙 파일 알림은 훅에서만, 새 문서 파일 검사는 훅, 커밋, CI 모두에서 한다.
+- 문서 내용은 보지 않는다. 내용이 정당화인지는 기계로 판단할 수 없다.
+
 ### 저장소 밖 설정
 
 남의 저장소처럼 설정 파일을 고치기 곤란한 곳은 `~/.config/kiln/config.toml`에서 켠다. 저장소 안 설정보다 우선하고, 경로가 여러 개 걸리면 그 설정을 적은 것 중 가장 깊은 것을 쓴다.
@@ -116,6 +129,7 @@ exts = ["tla", "py"]
 path = "~/vllm"
 comments = false
 tests = true
+docs = ["docs"]
 ```
 
 파이썬 주석 찾기는 Python 표준 `tokenize`, `ast`와 결과가 같은지 대조한다. vllm과 pytorch의 9,608개 파일에서 불일치 0건이었다.

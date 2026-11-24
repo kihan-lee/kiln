@@ -2,6 +2,7 @@ mod checks;
 mod comments;
 mod commit_msg;
 mod config;
+mod docs;
 mod git;
 mod scope;
 mod state;
@@ -43,6 +44,7 @@ struct Report {
     failures: Vec<Failure>,
     existing: Vec<Failure>,
     skipped: Vec<String>,
+    rules: Vec<PathBuf>,
 }
 
 fn findings_failure(dir: &Path, found: &[comments::Finding], existing: bool) -> Vec<Failure> {
@@ -112,6 +114,27 @@ fn evaluate(
             .filter(|f| f.starts_with(&dir))
             .cloned()
             .collect();
+        if let Some(allowed) = docs_rule(&dir, root, &main_root, &config) {
+            if hook {
+                report.rules.extend(docs::rule_files(&dir, &inside));
+            }
+            let stray = docs::stray(root, &dir, &inside, baseline, &allowed);
+            if !stray.is_empty() {
+                report.failures.push(Failure {
+                    project: dir.clone(),
+                    check: "docs".into(),
+                    count: stray.len(),
+                    report: format!(
+                        "{}$ 허용 경로 밖의 새 문서 파일 {}건\n{}\n작업 메모나 요약은 파일로 남기지 말고 답변에 쓰세요. 사용자가 요청한 문서라면 허용 경로({})로 옮기세요.",
+                        dir.display(),
+                        stray.len(),
+                        stray.join("\n"),
+                        allowed.join(", ")
+                    ),
+                });
+                continue;
+            }
+        }
         if comment_rule(&dir, root, &main_root, &config).0 {
             let found = comments::new_findings(root, &dir, &inside, baseline);
             if whole {
@@ -198,6 +221,43 @@ fn rule(
     config::local(dir, key).map(|value| (value, source.into()))
 }
 
+fn docs_rule(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> Option<Vec<String>> {
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Ok(rel) = dir.strip_prefix(root) {
+        dirs.push(main_root.join(rel));
+    }
+    config.docs(&dirs).or_else(|| config::local_docs(dir))
+}
+
+fn rule_notice(root: &Path, state: &State, rules: &[PathBuf]) -> Option<Failure> {
+    if rules.is_empty() {
+        return None;
+    }
+    let mut stamp: Vec<String> = rules
+        .iter()
+        .map(|f| format!("{}:{}", f.display(), state::content_hash(f)))
+        .collect();
+    stamp.sort();
+    let fingerprint = state::hash(&stamp.iter().map(String::as_str).collect::<Vec<_>>());
+    if State::read(&state.rules) == fingerprint {
+        return None;
+    }
+    let _ = fs::write(&state.rules, &fingerprint);
+    let names: Vec<String> = rules
+        .iter()
+        .map(|f| f.strip_prefix(root).unwrap_or(f).display().to_string())
+        .collect();
+    Some(Failure {
+        project: root.to_path_buf(),
+        check: "rules".into(),
+        count: rules.len(),
+        report: format!(
+            "규칙 파일이 바뀌었습니다 (같은 내용으로는 다시 막지 않음)\n{}\n바꾼 내용을 린트 규칙, 타입, 테스트 같은 검사로 옮길 수 있으면 옮기고 규칙 파일에서는 빼세요. 검사로 옮길 수 없는 판단만 글로 남깁니다. 확인했으면 그대로 끝내도 됩니다.",
+            names.join("\n")
+        ),
+    })
+}
+
 fn comment_rule(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> (bool, String) {
     match rule(dir, root, main_root, config, "comments") {
         Some((allowed, source)) => (!allowed, source),
@@ -238,6 +298,16 @@ fn status() -> ExitCode {
         if on { "막음" } else { "검사 안 함" }
     );
     let venvs = checks::environments(dir, &root, &main_root);
+    match docs_rule(dir, &root, &main_root, &config) {
+        Some(allowed) => {
+            println!(
+                "  새 문서 파일: 허용 경로 밖은 막음 ({})",
+                allowed.join(", ")
+            );
+            println!("  규칙 파일 변경: 훅에서 한 번 알림");
+        }
+        None => println!("  새 문서 파일, 규칙 파일: 검사 안 함 (docs 설정 없음)"),
+    }
     let (tests_in_hook, tests_source) = hook_tests(dir, &root, &main_root, &config);
     println!(
         "  훅에서 테스트: {} ({tests_source})",
@@ -319,7 +389,10 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
         state,
         snapshot: &snapshot,
     };
-    let report = evaluate(root, &files, false, &baseline, true);
+    let mut report = evaluate(root, &files, false, &baseline, true);
+    report
+        .failures
+        .extend(rule_notice(root, state, &report.rules));
 
     let failed: Vec<Value> = report
         .failures

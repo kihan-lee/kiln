@@ -33,6 +33,28 @@ impl Baseline<'_> {
             Baseline::Everything => None,
         }
     }
+
+    pub fn is_new(&self, root: &Path, file: &Path) -> bool {
+        let name = file.to_string_lossy();
+        let added = |args: &[&str]| !git::git(root, args).trim().is_empty();
+        match self {
+            Baseline::Session { snapshot, .. } => {
+                !snapshot.contains_key(file) && !git::is_tracked(root, file)
+            }
+            Baseline::Index => added(&[
+                "diff",
+                "--cached",
+                "--name-only",
+                "--diff-filter=A",
+                "--",
+                &name,
+            ]),
+            Baseline::Ref(base) => {
+                added(&["diff", "--name-only", "--diff-filter=A", base, "--", &name])
+            }
+            Baseline::Everything => false,
+        }
+    }
 }
 
 pub fn staged_files(root: &Path) -> Vec<PathBuf> {

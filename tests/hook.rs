@@ -419,6 +419,69 @@ fn runs_custom_checks_by_mode_and_extension() {
     assert!(!ok && err.contains("e2e 실패"), "{err}");
 }
 
+const DOCS: (&str, &str) = (
+    "pyproject.toml",
+    "[project]\nname = \"x\"\n\n[tool.kiln]\ndocs = [\"docs\", \"README.md\"]\n",
+);
+
+#[test]
+fn blocks_new_docs_outside_allowed_paths_and_notices_rule_files_once() {
+    let repo = Repo::new("docs", DOCS);
+    repo.hook("start", "s");
+    repo.write("docs/design.md", "설계\n");
+    repo.write("README.md", "소개\n");
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    repo.write("NOTES.md", "작업 메모\n");
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(
+        text.contains("NOTES.md") && text.contains("docs, README.md"),
+        "{text}"
+    );
+    fs::remove_file(repo.root.join("NOTES.md")).unwrap();
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    repo.write("CLAUDE.md", "항상 X를 하지 말 것\n");
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(
+        text.contains("규칙 파일이 바뀌었습니다") && text.contains("CLAUDE.md"),
+        "{text}"
+    );
+    assert_eq!(repo.hook("stop", "s"), None);
+
+    repo.write("CLAUDE.md", "항상 X를 하지 말 것\n항상 Y도\n");
+    assert!(blocked(&repo.hook("stop", "s")));
+}
+
+#[test]
+fn check_staged_blocks_only_new_stray_docs() {
+    let repo = Repo::new("docs-staged", DOCS);
+    repo.write("old.md", "예전 문서\n");
+    repo.commit();
+    repo.write("old.md", "예전 문서 고침\n");
+    repo.write("CLAUDE.md", "규칙\n");
+    repo.git(&["add", "-A"]);
+    let (ok, err) = repo.kiln(&["check", "--staged"]);
+    assert!(ok, "{err}");
+
+    repo.write("SUMMARY.md", "요약\n");
+    repo.git(&["add", "SUMMARY.md"]);
+    let (ok, err) = repo.kiln(&["check", "--staged"]);
+    assert!(
+        !ok && err.contains("SUMMARY.md") && !err.contains("old.md"),
+        "{err}"
+    );
+}
+
+#[test]
+fn docs_rule_is_off_without_the_setting() {
+    let repo = Repo::new("docs-off", PY);
+    repo.hook("start", "s");
+    repo.write("NOTES.md", "작업 메모\n");
+    repo.write("CLAUDE.md", "규칙\n");
+    assert_eq!(repo.hook("stop", "s"), None);
+}
+
 #[test]
 fn ruff_is_found_on_path_but_ty_needs_an_environment() {
     let repo = Repo::new(
