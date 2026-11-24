@@ -14,10 +14,13 @@ const RENDER: &str = r#"tool=$1
 cache=$2
 kustomize=$3
 lint=$4
-shift 4
+policies=$5
+shift 5
 mkdir -p "$cache"
 err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+work=$(mktemp -d)
+doc="$work/resource.yaml"
+trap 'rm -rf "$err" "$work"' EXIT
 fail=0
 while [ $# -gt 0 ]; do
   kind=$1
@@ -31,7 +34,8 @@ while [ $# -gt 0 ]; do
   case $tool in
     kubeconform) res=$(printf '%s\n' "$out" | kubeconform -strict -ignore-missing-schemas -cache "$cache" - 2>&1) ;;
     kube-linter) res=$(printf '%s\n' "$out" | kube-linter lint $lint - 2>&1) ;;
-  esac || { echo "$target:"; echo "$res"; fail=1; }
+    kyverno) printf '%s\n' "$out" > "$doc"; res=$(kyverno apply $policies --resource "$doc" 2>&1) ;;
+  esac || { echo "$target:"; printf '%s\n' "$res" | grep -v -e '^Warning:' -e '^Applying ' -e '^pass: ' -e '^$'; fail=1; }
 done
 exit $fail
 "#;
@@ -64,6 +68,26 @@ fn rel(dir: &Path, p: &Path) -> String {
     } else {
         r
     }
+}
+
+fn is_policy(f: &Path) -> bool {
+    ext_in(f, &YAML)
+        && fs::read_to_string(f).unwrap_or_default().lines().any(|l| {
+            l.starts_with("apiVersion: kyverno.io/")
+                || l.starts_with("apiVersion: policies.kyverno.io/")
+        })
+}
+
+fn units_of(dir: &Path, files: &[PathBuf]) -> Vec<Unit> {
+    let mut units: Vec<Unit> = Vec::new();
+    for f in files {
+        if let Some(u) = unit(dir, f) {
+            if !units.contains(&u) {
+                units.push(u);
+            }
+        }
+    }
+    units
 }
 
 fn is_manifest(f: &Path) -> bool {
@@ -130,17 +154,11 @@ pub fn plan(
     missing: &mut Vec<String>,
 ) {
     let whole = files.is_none();
-    let tracked: Vec<PathBuf>;
-    let files = match files {
-        Some(files) => files,
-        None => {
-            tracked = crate::git::git(dir, &["ls-files"])
-                .lines()
-                .map(|l| dir.join(l))
-                .collect();
-            &tracked
-        }
-    };
+    let tracked: Vec<PathBuf> = crate::git::git(dir, &["ls-files"])
+        .lines()
+        .map(|l| dir.join(l))
+        .collect();
+    let files = files.unwrap_or(&tracked);
     let existing = |exts: &[&str]| -> Vec<String> {
         files
             .iter()
@@ -175,15 +193,33 @@ pub fn plan(
         }
     }
 
-    let mut units: Vec<Unit> = Vec::new();
-    for f in files {
-        if let Some(u) = unit(dir, f) {
-            if !units.contains(&u) {
-                units.push(u);
-            }
+    let mut policies: Vec<String> = tracked
+        .iter()
+        .chain(files)
+        .filter(|f| f.is_file() && is_policy(f))
+        .map(|f| rel(dir, f))
+        .collect();
+    policies.sort();
+    policies.dedup();
+    let policy_changed = !whole && files.iter().any(|f| f.is_file() && is_policy(f));
+    let units = units_of(dir, files);
+    let all_units = if policy_changed {
+        units_of(dir, &tracked)
+    } else {
+        Vec::new()
+    };
+    let mut runs: Vec<(&str, &[Unit])> = Vec::new();
+    if !units.is_empty() {
+        runs.push(("kubeconform", &units));
+        runs.push(("kube-linter", &units));
+    }
+    if !policies.is_empty() {
+        let chosen = if policy_changed { &all_units } else { &units };
+        if !chosen.is_empty() {
+            runs.push(("kyverno", chosen));
         }
     }
-    if units.is_empty() {
+    if runs.is_empty() {
         return;
     }
     let kustomize = if found("kustomize").is_some() {
@@ -193,32 +229,33 @@ pub fn plan(
     } else {
         None
     };
-    if kustomize.is_none() && units.iter().any(|u| matches!(u, Unit::Kustomize(_))) {
+    let needs = |kind: fn(&Unit) -> bool| runs.iter().any(|(_, us)| us.iter().any(kind));
+    if kustomize.is_none() && needs(|u| matches!(u, Unit::Kustomize(_))) {
         missing.push("kubectl".into());
     }
     let helm = found("helm").is_some();
-    if !helm && units.iter().any(|u| matches!(u, Unit::Chart(_))) {
+    if !helm && needs(|u| matches!(u, Unit::Chart(_))) {
         missing.push("helm".into());
-    }
-    let mut targets = Vec::new();
-    for u in &units {
-        let (kind, target) = match u {
-            Unit::Kustomize(t) if kustomize.is_some() => ("k", t),
-            Unit::Chart(t) if helm => ("c", t),
-            Unit::Manifest(t) => ("f", t),
-            _ => continue,
-        };
-        targets.push(kind.to_string());
-        targets.push(target.clone());
-    }
-    if targets.is_empty() {
-        return;
     }
     let lint = KUBE_LINTER
         .iter()
         .find(|n| dir.join(n).is_file())
         .map_or(LINT_DEFAULT.to_string(), |n| format!("--config {n}"));
-    for name in ["kubeconform", "kube-linter"] {
+    for (name, chosen) in runs {
+        let mut targets = Vec::new();
+        for u in chosen {
+            let (kind, target) = match u {
+                Unit::Kustomize(t) if kustomize.is_some() => ("k", t),
+                Unit::Chart(t) if helm => ("c", t),
+                Unit::Manifest(t) => ("f", t),
+                _ => continue,
+            };
+            targets.push(kind.to_string());
+            targets.push(target.clone());
+        }
+        if targets.is_empty() {
+            continue;
+        }
         let Some(bin) = found(name) else {
             missing.push(name.into());
             continue;
@@ -229,6 +266,7 @@ pub fn plan(
         argv.push(cache_dir());
         argv.push(kustomize.unwrap_or("kubectl kustomize").into());
         argv.push(lint.clone());
+        argv.push(policies.join(" "));
         argv.extend(targets.iter().cloned());
         let shown: Vec<&str> = targets
             .iter()

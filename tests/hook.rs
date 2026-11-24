@@ -700,3 +700,66 @@ fn new_kube_linter_ignore_annotations_are_blocked_like_noqa() {
     let (ok, out) = repo.kiln(&["check", "--all"]);
     assert!(out.contains("job.yaml:5"), "{ok} {out}");
 }
+
+#[test]
+fn kyverno_policies_in_the_repo_check_changed_units_and_all_units_when_a_policy_changes() {
+    let repo = Repo::new("kyverno", (".yamllint.yaml", "extends: default\n"));
+    repo.write(
+        "policy/p.yaml",
+        "apiVersion: policies.kyverno.io/v1\nkind: ValidatingPolicy\nmetadata:\n  name: p\n",
+    );
+    repo.write("app/kustomization.yaml", "resources:\n  - deploy.yaml\n");
+    repo.write("app/deploy.yaml", "apiVersion: v1\nkind: ConfigMap\n");
+    repo.write("jobs/j.yaml", "apiVersion: batch/v1\nkind: Job\n");
+    repo.commit();
+    let bin = repo.base.join("bin");
+    let log = repo.base.join("log");
+    fs::create_dir_all(&log).unwrap();
+    let l = log.display();
+    script_tool(&bin, "kubectl", "echo \"rendered $2\"");
+    script_tool(&bin, "kubeconform", "cat > /dev/null");
+    script_tool(&bin, "kube-linter", "cat > /dev/null");
+    script_tool(&bin, "yamllint", "exit 0");
+    script_tool(
+        &bin,
+        "kyverno",
+        &format!(
+            "for a; do last=$a; done\necho \"args: $*\" >> {l}/kyverno\ncat \"$last\" >> {l}/kyverno\nif grep -q bad \"$last\"; then echo 'kyverno 실패'; exit 1; fi"
+        ),
+    );
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let home = repo.base.join("home");
+    let envs = [("PATH", Path::new(&path)), ("HOME", home.as_path())];
+    let seen = |name: &str| fs::read_to_string(log.join(name)).unwrap_or_default();
+
+    repo.hook_with("start", "s", &envs);
+    repo.write("jobs/j.yaml", "apiVersion: batch/v1\nkind: Job\nspec: {}\n");
+    assert_eq!(repo.hook_with("stop", "s", &envs), None);
+    let first = seen("kyverno");
+    assert!(
+        first.contains("apply policy/p.yaml --resource") && first.contains("kind: Job"),
+        "{first}"
+    );
+    assert!(!first.contains("rendered app"), "{first}");
+
+    repo.write(
+        "policy/p.yaml",
+        "apiVersion: policies.kyverno.io/v1\nkind: ValidatingPolicy\nmetadata:\n  name: p2\n",
+    );
+    assert_eq!(repo.hook_with("stop", "s", &envs), None);
+    assert!(
+        seen("kyverno").contains("rendered app"),
+        "{}",
+        seen("kyverno")
+    );
+
+    repo.write(
+        "jobs/j.yaml",
+        "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: bad\n",
+    );
+    let text = reason(&repo.hook_with("stop", "s", &envs));
+    assert!(
+        text.contains("kyverno 실패") && text.contains("jobs/j.yaml"),
+        "{text}"
+    );
+}
