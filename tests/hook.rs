@@ -580,3 +580,87 @@ fn ruff_is_found_on_path_but_ty_needs_an_environment() {
     let text = reason(&repo.hook_with("stop", "s", &envs));
     assert!(text.contains("활성 환경의 ty 실패"), "{text}");
 }
+
+fn script_tool(dir: &Path, name: &str, body: &str) {
+    fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    fs::set_permissions(&path, perms).unwrap();
+}
+
+#[test]
+fn kubernetes_manifests_are_rendered_and_checked_by_what_changed() {
+    let repo = Repo::new("k8s", (".yamllint.yaml", "extends: default\n"));
+    repo.write("app/kustomization.yaml", "resources:\n  - deploy.yaml\n");
+    repo.write("app/deploy.yaml", "apiVersion: v1\nkind: ConfigMap\n");
+    repo.write("app/jobs/job.yaml", "apiVersion: batch/v1\nkind: Job\n");
+    repo.write("chart/Chart.yaml", "name: c\n");
+    repo.write("chart/templates/x.yaml", "kind: {{ .Values.k }}\n");
+    repo.write("values.yaml", "replicas: 1\n");
+    repo.commit();
+    let bin = repo.base.join("bin");
+    let log = repo.base.join("log");
+    fs::create_dir_all(&log).unwrap();
+    let l = log.display();
+    script_tool(&bin, "yamllint", &format!("echo \"$@\" >> {l}/yamllint"));
+    script_tool(&bin, "kubectl", "echo \"rendered $2\"");
+    script_tool(&bin, "helm", "echo \"chart $3\"");
+    script_tool(
+        &bin,
+        "kubeconform",
+        &format!("input=$(cat)\necho \"$input\" >> {l}/kubeconform\ncase \"$input\" in *bad*) echo 'kubeconform 실패'; exit 1;; esac"),
+    );
+    script_tool(&bin, "kube-linter", &format!("cat >> {l}/kube-linter"));
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let home = repo.base.join("home");
+    let envs = [("PATH", Path::new(&path)), ("HOME", home.as_path())];
+    let seen = |name: &str| fs::read_to_string(log.join(name)).unwrap_or_default();
+
+    repo.hook_with("start", "s", &envs);
+    repo.write("values.yaml", "replicas: 2\n");
+    assert_eq!(repo.hook_with("stop", "s", &envs), None);
+    assert!(
+        seen("yamllint").contains("values.yaml"),
+        "{}",
+        seen("yamllint")
+    );
+    assert_eq!(seen("kubeconform"), "");
+
+    repo.write(
+        "app/deploy.yaml",
+        "apiVersion: v1\nkind: ConfigMap\ndata: {}\n",
+    );
+    repo.write("chart/templates/x.yaml", "kind: {{ .Values.kind }}\n");
+    assert_eq!(repo.hook_with("stop", "s", &envs), None);
+    let rendered = seen("kubeconform");
+    assert!(
+        rendered.contains("rendered app") && rendered.contains("chart chart"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Job"), "{rendered}");
+
+    repo.write(
+        "app/jobs/job.yaml",
+        "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: bad\n",
+    );
+    let text = reason(&repo.hook_with("stop", "s", &envs));
+    assert!(
+        text.contains("kubeconform 실패") && text.contains("app/jobs/job.yaml"),
+        "{text}"
+    );
+    assert_eq!(seen("kube-linter"), "");
+
+    repo.write(".kube-linter.yaml", "checks: {}\n");
+    repo.write(
+        "app/jobs/job.yaml",
+        "apiVersion: batch/v1\nkind: Job\nspec: {}\n",
+    );
+    assert_eq!(repo.hook_with("stop", "s", &envs), None);
+    assert!(
+        seen("kube-linter").contains("kind: Job"),
+        "{}",
+        seen("kube-linter")
+    );
+}

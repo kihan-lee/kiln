@@ -5,6 +5,8 @@ use std::process::Command;
 
 pub struct Check {
     pub name: String,
+    pub tool: String,
+    pub shown: String,
     pub argv: Vec<String>,
 }
 
@@ -28,6 +30,7 @@ fn cmake_project(dir: &Path) -> bool {
 pub fn is_project(dir: &Path) -> bool {
     ["pyproject.toml", "Cargo.toml", "kiln.toml"]
         .iter()
+        .chain(crate::k8s::YAMLLINT.iter())
         .any(|n| dir.join(n).is_file())
         || cmake_project(dir)
 }
@@ -78,9 +81,11 @@ pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn check(name: &str, argv: Vec<String>) -> Check {
+pub fn check(name: &str, argv: Vec<String>) -> Check {
     Check {
         name: name.into(),
+        tool: argv[0].clone(),
+        shown: argv.join(" "),
         argv,
     }
 }
@@ -260,6 +265,7 @@ pub fn plan(
             checks.push(check("cargo test", vec![cargo, "test".into(), "-q".into()]));
         }
     }
+    crate::k8s::plan(dir, files, path, &mut checks, &mut missing);
     Plan { checks, missing }
 }
 

@@ -26,7 +26,7 @@
 
 ## 검사 내용
 
-바뀐 파일에서 위로 올라가며 가장 가까운 프로젝트 폴더를 찾고, 그 프로젝트에 설정된 도구만 돌린다. 프로젝트 폴더는 `pyproject.toml`, `Cargo.toml`, `kiln.toml`, 또는 `project(`를 선언한 `CMakeLists.txt`가 있는 곳이다. `add_subdirectory`로 들어가는 하위 `CMakeLists.txt`는 `project(`가 없으므로 상위 프로젝트에 속한다. 템플릿이 아닌 프로젝트에서도 그대로 동작한다. 설정이 없는 프로젝트에서는 아무것도 하지 않는다.
+바뀐 파일에서 위로 올라가며 가장 가까운 프로젝트 폴더를 찾고, 그 프로젝트에 설정된 도구만 돌린다. 프로젝트 폴더는 `pyproject.toml`, `Cargo.toml`, `kiln.toml`, `.yamllint`(`.yamllint.yaml`, `.yamllint.yml`), 또는 `project(`를 선언한 `CMakeLists.txt`가 있는 곳이다. `add_subdirectory`로 들어가는 하위 `CMakeLists.txt`는 `project(`가 없으므로 상위 프로젝트에 속한다. 템플릿이 아닌 프로젝트에서도 그대로 동작한다. 설정이 없는 프로젝트에서는 아무것도 하지 않는다.
 
 가상환경을 만들거나 의존성을 설치하지 않는다. 도구는 아래 순서로 찾는다.
 
@@ -46,6 +46,10 @@
 | `Cargo.toml` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | 프로젝트 전체 | O | O |
 | `Cargo.toml` | `cargo test` | 프로젝트 전체 | 설정 시 | O |
 | `.clang-format` | `clang-format --dry-run --Werror` | 바뀐 CUDA, C, C++ 파일 | O | O |
+| `.yamllint` | `yamllint --no-warnings` | 바뀐 yaml 파일 | O | O |
+| 항상 | `shellcheck --severity=warning` | 바뀐 `.sh`, `.bash` 파일 | O | O |
+| 항상 | `kubeconform -strict -ignore-missing-schemas` | 바뀐 매니페스트를 그린 결과 | O | O |
+| `.kube-linter.yaml` | `kube-linter lint` | 바뀐 매니페스트를 그린 결과 | O | O |
 
 린트와 포맷은 새로 생기는 위반을 막는 것이 목적이라 바뀐 파일만 본다. 타입과 Rust 검사는 한 파일의 변경이 다른 파일을 깨뜨릴 수 있어 전체를 본다.
 
@@ -56,6 +60,18 @@
 - CUDA, C, C++ (`.cu`, `.cuh`, `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`): 커널을 고치면 결과가 달라지므로 pytest와 cargo 검사를 돌린다. ty는 돌리지 않는다.
 
 clang-format은 프로젝트 폴더에 `.clang-format`(또는 `_clang-format`)이 있을 때만 돌고, `PATH`에서 찾는다.
+
+### Kubernetes
+
+yamllint, shellcheck, kubeconform, kube-linter, helm, kubectl(또는 kustomize)은 `PATH`에서 찾는다. 클러스터에는 접속하지 않는다. kubeconform은 스키마를 처음 받을 때만 네트워크를 쓰고 `~/.cache/kiln/kubeconform`에 저장한다.
+
+바뀐 파일마다 무엇을 그릴지 정한다.
+
+- `Chart.yaml`이 있는 폴더 안의 파일: 그 차트를 기본 values로 `helm template`
+- `kustomization.yaml`이 있는 폴더 안의 파일: 그 폴더를 `kubectl kustomize`(`kustomize`가 있으면 `kustomize build`). kustomization이 그 파일이나 하위 폴더 이름을 적고 있지 않으면 속하지 않은 것으로 보고 위로 더 올라간다
+- 어디에도 속하지 않는 yaml 중 `apiVersion:`과 `kind:`가 있는 파일: 그 파일 그대로
+
+그린 결과를 kubeconform에 넘긴다. 그리기 자체가 실패해도 kubeconform 검사의 실패로 보고한다. kube-linter는 기본 규칙이 엄격해서 프로젝트 폴더에 `.kube-linter.yaml`을 두었을 때만 돈다. values 파일을 여러 개 쓰는 차트처럼 저장소마다 다른 규칙은 직접 정한 검사로 붙인다.
 
 ### 훅에서 테스트
 

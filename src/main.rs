@@ -4,6 +4,7 @@ mod commit_msg;
 mod config;
 mod docs;
 mod git;
+mod k8s;
 mod scope;
 mod state;
 mod stats;
@@ -177,10 +178,7 @@ fn evaluate(
                         .push(format!("{} ({}에서 실행 불가)", check.name, dir.display()))
                 }
                 Outcome::Failed(tail) => {
-                    let shown = check
-                        .argv
-                        .join(" ")
-                        .replace(&format!("{}/", dir.display()), "");
+                    let shown = check.shown.replace(&format!("{}/", dir.display()), "");
                     report.failures.push(Failure {
                         project: dir.clone(),
                         check: check.name.clone(),
@@ -283,7 +281,7 @@ fn status() -> ExitCode {
         .find(|d| checks::is_project(d))
     else {
         println!(
-            "pyproject.toml, Cargo.toml, CMakeLists.txt, kiln.toml이 없어 돌릴 검사가 없습니다"
+            "pyproject.toml, Cargo.toml, CMakeLists.txt, kiln.toml, .yamllint가 없어 돌릴 검사가 없습니다"
         );
         return ExitCode::SUCCESS;
     };
@@ -322,7 +320,7 @@ fn status() -> ExitCode {
         } else {
             "훅과 check"
         };
-        println!("  {}: {} ({when})", check.name, check.argv[0]);
+        println!("  {}: {} ({when})", check.name, check.tool);
     }
     let custom = match config::custom_checks(dir) {
         Ok(list) => list,
