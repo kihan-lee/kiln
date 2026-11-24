@@ -117,15 +117,19 @@ impl Repo {
         self.send(mode, &payload, &[])
     }
 
-    fn track_at(&self, event: &str, session: &str, id: &str, cwd: &Path, file: Option<&Path>) {
-        let input = file.map_or(String::new(), |f| {
-            format!(r#","tool_input":{{"file_path":"{}"}}"#, f.display())
-        });
+    fn track_input(&self, event: &str, session: &str, id: &str, cwd: &Path, input: &str) {
         let payload = format!(
-            r#"{{"cwd":"{}","session_id":"{session}","hook_event_name":"{event}","tool_use_id":"{id}"{input}}}"#,
+            r#"{{"cwd":"{}","session_id":"{session}","hook_event_name":"{event}","tool_use_id":"{id}","tool_input":{input}}}"#,
             cwd.display()
         );
         assert_eq!(self.send("track", &payload, &[]), None);
+    }
+
+    fn track_at(&self, event: &str, session: &str, id: &str, cwd: &Path, file: Option<&Path>) {
+        let input = file.map_or("{}".to_string(), |f| {
+            format!(r#"{{"file_path":"{}"}}"#, f.display())
+        });
+        self.track_input(event, session, id, cwd, &input);
     }
 
     fn track(&self, event: &str, session: &str, id: &str, file: Option<&str>) {
@@ -205,6 +209,7 @@ fn blocks_suppressions() {
     repo.write("a.py", "#!/usr/bin/env python3\nimport os  # noqa: F401\n");
     let out = repo.hook("stop", "s");
     let text = reason(&out);
+    assert!(text.contains("kiln을 직접 돌릴 필요는 없습니다"), "{text}");
     assert!(text.contains("검사를 끄는 표시"), "{text}");
     assert!(text.contains("a.py:2"), "{text}");
     assert!(!text.contains("a.py:1"), "{text}");
@@ -904,4 +909,38 @@ fn session_start_tells_the_model_where_kiln_is_when_it_is_not_on_path() {
     let bin = Path::new(env!("CARGO_BIN_EXE_kiln")).parent().unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());
     assert_eq!(repo.send("start", &payload, &[("PATH", &path)]), None);
+}
+
+#[test]
+fn repos_named_in_shell_commands_are_checked() {
+    let repo = Repo::new("shell-mention", PY);
+    let input = format!(
+        r#"{{"command":"printf x > {}"}}"#,
+        repo.root.join("new/a.py").display()
+    );
+    repo.hook_at("start", "s", &repo.base);
+    repo.track_input("PreToolUse", "s", "t1", &repo.base, &input);
+    repo.write("new/a.py", "x = 1  # 셸로 쓴 주석\n");
+    repo.track_input("PostToolUse", "s", "t1", &repo.base, &input);
+    let text = reason(&repo.hook_at("stop", "s", &repo.base));
+    assert!(text.contains("new/a.py:1"), "{text}");
+}
+
+#[test]
+fn files_another_session_edited_during_this_sessions_tool_are_left_to_it() {
+    let repo = Repo::new("foreign", PY);
+    let other = repo.root.join("other.py");
+    repo.hook("start", "mine");
+    repo.hook("start", "theirs");
+    repo.track("PreToolUse", "mine", "t1", None);
+    repo.track_at("PreToolUse", "theirs", "t2", &repo.root, Some(&other));
+    repo.write("other.py", "y = 2  # 다른 세션의 주석\n");
+    repo.track_at("PostToolUse", "theirs", "t2", &repo.root, Some(&other));
+    repo.write("mine.py", "x = 1  # 이 세션의 주석\n");
+    repo.track("PostToolUse", "mine", "t1", None);
+    let text = reason(&repo.hook("stop", "mine"));
+    assert!(text.contains("mine.py"), "{text}");
+    assert!(!text.contains("other.py"), "{text}");
+    let theirs = reason(&repo.hook("stop", "theirs"));
+    assert!(theirs.contains("other.py"), "{theirs}");
 }

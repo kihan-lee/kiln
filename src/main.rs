@@ -15,7 +15,7 @@ use config::Config;
 use scope::Baseline;
 use serde_json::{json, Value};
 use state::State;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -367,7 +367,7 @@ struct Stopped {
     notes: Vec<String>,
 }
 
-fn hook_stop(root: &Path, session: &str, state: &State) -> Stopped {
+fn hook_stop(root: &Path, session: &str, state: &State, foreign: &HashSet<PathBuf>) -> Stopped {
     let mut stopped = Stopped {
         reports: None,
         notes: Vec::new(),
@@ -375,7 +375,7 @@ fn hook_stop(root: &Path, session: &str, state: &State) -> Stopped {
     let snapshot = state.load_snapshot(root).unwrap_or_default();
     let mut changed = session_files(&git::dirty_files(root), &snapshot);
     if let Some(touched) = state.load_touched(root) {
-        changed.retain(|(f, _)| touched.contains(f));
+        changed.retain(|(f, _)| touched.contains(f) && !foreign.contains(f));
     }
     if changed.is_empty() {
         return stopped;
@@ -455,9 +455,10 @@ fn hook_stop(root: &Path, session: &str, state: &State) -> Stopped {
 fn stop(cwd: &Path, session: &str, base: &Path) {
     let mut reports = Vec::new();
     let mut notes = Vec::new();
+    let foreign = state::named_only_by_others(base, session);
     for root in session_roots(cwd, session, base) {
         let state = State::new(base.to_path_buf(), session, &root);
-        let stopped = hook_stop(&root, session, &state);
+        let stopped = hook_stop(&root, session, &state, &foreign);
         reports.extend(stopped.reports);
         notes.extend(stopped.notes);
     }
@@ -469,7 +470,7 @@ fn stop(cwd: &Path, session: &str, base: &Path) {
         return;
     }
     let reason = format!(
-        "kiln 검사가 실패했습니다. 원인을 고친 뒤 끝내세요. 검사를 끄거나 규칙을 무시하는 표시로 넘기지 마세요. 정당한 예외라고 판단되면 넘기지 말고 사용자에게 먼저 확인하세요.\n\n{}",
+        "kiln 검사가 실패했습니다. 원인을 고친 뒤 끝내세요. 검사를 끄거나 규칙을 무시하는 표시로 넘기지 마세요. 정당한 예외라고 판단되면 넘기지 말고 사용자에게 먼저 확인하세요. 고친 뒤 그대로 끝내면 kiln이 다시 검사하므로 kiln을 직접 돌릴 필요는 없습니다.\n\n{}",
         reports.join("\n\n")
     );
     let mut out = json!({ "decision": "block", "reason": reason });
@@ -522,7 +523,16 @@ fn track(cwd: &Path, session: &str, base: &Path, payload: &Value) {
         .map(|n| resolve(&cwd.join(n)))
         .collect();
     let mut roots = session_roots(cwd, session, base);
-    for root in named.iter().filter_map(|f| repo_of(f)) {
+    let mentioned = if before {
+        mentioned_paths(cwd, &payload["tool_input"])
+    } else {
+        Vec::new()
+    };
+    let found = named
+        .iter()
+        .filter_map(|f| repo_of(f))
+        .chain(mentioned.iter().filter_map(|p| root_of(p)));
+    for root in found {
         if !roots.contains(&root) {
             roots.push(root);
         }
@@ -541,6 +551,47 @@ fn track(cwd: &Path, session: &str, base: &Path, payload: &Value) {
             changed.extend(named.iter().filter(|f| f.starts_with(&root)).cloned());
             state.add_touched(&root, &changed);
         }
+    }
+    if !before {
+        state::add_named(base, session, &named);
+    }
+}
+
+const MENTION_LIMIT: usize = 64;
+
+fn mentioned_paths(cwd: &Path, input: &Value) -> Vec<PathBuf> {
+    let home = env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let mut found: Vec<PathBuf> = Vec::new();
+    for key in ["command", "code"] {
+        let Some(text) = input[key].as_str() else {
+            continue;
+        };
+        let tokens = text.split(|c: char| c.is_whitespace() || "\"'`()[]{};,=|&<>$".contains(c));
+        for token in tokens.filter(|t| t.contains('/') || t.starts_with('.')) {
+            let path = match token.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => cwd.join(token),
+            };
+            let Some(existing) = path.ancestors().find(|p| p.exists()) else {
+                continue;
+            };
+            let existing = existing.to_path_buf();
+            if existing != cwd && !found.contains(&existing) {
+                found.push(existing);
+            }
+            if found.len() >= MENTION_LIMIT {
+                return found;
+            }
+        }
+    }
+    found
+}
+
+fn root_of(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        git::toplevel(path)
+    } else {
+        repo_of(path)
     }
 }
 

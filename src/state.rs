@@ -233,3 +233,55 @@ pub fn clean_old(base: &Path) {
         }
     }
 }
+
+const NAMED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn named_file(base: &Path, session: &str) -> PathBuf {
+    base.join(format!("named-{}", hash(&[session])))
+}
+
+pub fn add_named(base: &Path, session: &str, files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
+    let _ = fs::create_dir_all(base);
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(named_file(base, session))
+    {
+        for file in files {
+            let _ = writeln!(f, "{}", file.display());
+        }
+    }
+}
+
+fn read_named(path: &Path) -> HashSet<PathBuf> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(PathBuf::from)
+        .collect()
+}
+
+pub fn named_only_by_others(base: &Path, session: &str) -> HashSet<PathBuf> {
+    let own_path = named_file(base, session);
+    let own = read_named(&own_path);
+    let now = SystemTime::now();
+    let mut others = HashSet::new();
+    for entry in fs::read_dir(base).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let is_named = path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("named-"));
+        let recent = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| now.duration_since(t).unwrap_or_default() < NAMED_FOR);
+        if is_named && recent && path != own_path {
+            others.extend(read_named(&path));
+        }
+    }
+    others.retain(|f| !own.contains(f));
+    others
+}
