@@ -90,6 +90,34 @@ impl Repo {
         (!text.trim().is_empty()).then(|| serde_json::from_str(text.trim()).unwrap())
     }
 
+    fn track(&self, event: &str, session: &str, id: &str, file: Option<&str>) {
+        let input = file.map_or(String::new(), |f| {
+            format!(
+                r#","tool_input":{{"file_path":"{}"}}"#,
+                self.root.join(f).display()
+            )
+        });
+        let payload = format!(
+            r#"{{"cwd":"{}","session_id":"{session}","hook_event_name":"{event}","tool_use_id":"{id}"{input}}}"#,
+            self.root.display()
+        );
+        let mut child = self
+            .command()
+            .args(["hook", "track"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.stdout.is_empty());
+    }
+
     fn kiln(&self, args: &[&str]) -> (bool, String) {
         let out = self
             .command()
@@ -762,4 +790,41 @@ fn kyverno_policies_in_the_repo_check_changed_units_and_all_units_when_a_policy_
         text.contains("kyverno 실패") && text.contains("jobs/j.yaml"),
         "{text}"
     );
+}
+
+#[test]
+fn with_tool_tracking_only_files_changed_during_this_sessions_tools_are_checked() {
+    let repo = Repo::new("track", PY);
+    repo.hook("start", "s");
+    repo.track("PreToolUse", "s", "t1", None);
+    repo.write("mine.py", "x = 1  # 이 세션의 주석\n");
+    repo.track("PostToolUse", "s", "t1", None);
+    repo.write("other.py", "y = 2  # 다른 세션의 주석\n");
+    let out = repo.hook("stop", "s");
+    let text = reason(&out);
+    assert!(text.contains("mine.py"), "{text}");
+    assert!(!text.contains("other.py"), "{text}");
+}
+
+#[test]
+fn files_named_by_edit_tools_count_as_this_sessions_changes() {
+    let repo = Repo::new("track-named", PY);
+    repo.hook("start", "s");
+    repo.write("named.py", "x = 1  # 편집 도구로 쓴 주석\n");
+    repo.write("other.py", "y = 2  # 다른 세션의 주석\n");
+    repo.track("PostToolUse", "s", "t1", Some("named.py"));
+    let out = repo.hook("stop", "s");
+    let text = reason(&out);
+    assert!(text.contains("named.py"), "{text}");
+    assert!(!text.contains("other.py"), "{text}");
+}
+
+#[test]
+fn other_sessions_changes_do_not_block_a_session_whose_tools_changed_nothing() {
+    let repo = Repo::new("track-none", PY);
+    repo.hook("start", "s");
+    repo.track("PreToolUse", "s", "t1", None);
+    repo.track("PostToolUse", "s", "t1", None);
+    repo.write("other.py", "y = 2  # 다른 세션의 주석\n");
+    assert_eq!(repo.hook("stop", "s"), None);
 }

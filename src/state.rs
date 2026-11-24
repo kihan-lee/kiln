@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,20 @@ pub fn hash(parts: &[&str]) -> String {
     hash_bytes(&parts.iter().map(|p| p.as_bytes()).collect::<Vec<_>>())
 }
 
+pub fn stamp(file: &Path) -> String {
+    fs::metadata(file).map_or_else(
+        |_| "missing".into(),
+        |m| {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            format!("{}:{modified}", m.len())
+        },
+    )
+}
+
 pub fn content_hash(file: &Path) -> String {
     fs::read(file).map_or_else(|_| "missing".into(), |b| hash_bytes(&[&b]))
 }
@@ -35,6 +49,8 @@ pub struct State {
     pub passed: PathBuf,
     pub noticed: PathBuf,
     pub rules: PathBuf,
+    pub touched: PathBuf,
+    pub windows: PathBuf,
 }
 
 impl State {
@@ -47,6 +63,8 @@ impl State {
             blocks: base.join(format!("blocks-{session_key}")),
             noticed: base.join(format!("noticed-{session_key}")),
             rules: base.join(format!("rules-{session_key}")),
+            touched: base.join(format!("touched-{session_key}")),
+            windows: base.join(format!("windows-{session_key}")),
             passed: base.join(format!("passed-{}", hash(&[&key]))),
             dir: base,
         }
@@ -91,6 +109,62 @@ impl State {
                 .map(|(digest, rel)| (root.join(rel), digest.to_string()))
                 .collect(),
         )
+    }
+
+    pub fn open_window(&self, id: &str, root: &Path, files: &[PathBuf]) {
+        let _ = fs::create_dir_all(&self.windows);
+        let body: String = files
+            .iter()
+            .map(|f| {
+                format!(
+                    "{}\t{}\n",
+                    stamp(f),
+                    f.strip_prefix(root).unwrap_or(f).display()
+                )
+            })
+            .collect();
+        let _ = fs::write(self.windows.join(hash(&[id])), body);
+        if !self.touched.exists() {
+            let _ = fs::write(&self.touched, "");
+        }
+    }
+
+    pub fn close_window(&self, id: &str, root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+        let path = self.windows.join(hash(&[id]));
+        let Ok(body) = fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let _ = fs::remove_file(&path);
+        let before: HashMap<PathBuf, &str> = body
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(s, rel)| (root.join(rel), s))
+            .collect();
+        files
+            .iter()
+            .filter(|f| before.get(*f).copied() != Some(stamp(f).as_str()))
+            .cloned()
+            .collect()
+    }
+
+    pub fn add_touched(&self, root: &Path, files: &[PathBuf]) {
+        let lines: String = files
+            .iter()
+            .filter_map(|f| f.strip_prefix(root).ok())
+            .map(|rel| format!("{}\n", rel.display()))
+            .collect();
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.touched)
+        {
+            let _ = f.write_all(lines.as_bytes());
+        }
+    }
+
+    pub fn load_touched(&self, root: &Path) -> Option<HashSet<PathBuf>> {
+        let text = fs::read_to_string(&self.touched).ok()?;
+        Some(text.lines().map(|rel| root.join(rel)).collect())
     }
 
     pub fn snapshot_copy(&self, digest: &str) -> Option<PathBuf> {

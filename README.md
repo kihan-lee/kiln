@@ -20,7 +20,7 @@
 | `kiln check --base <ref>` | CI | `<ref>`와 갈라진 뒤 바뀐 내용 |
 | `kiln check --all` | 직접 실행 | 프로젝트 전체 (기존 주석과 검사 끄기 표시는 목록만 보여 주고 실패로 치지 않음) |
 | `kiln commit-msg <file>` | commit-msg | 커밋 메시지 형식 |
-| `kiln hook start`, `kiln hook stop` | Claude Code 훅 | 대화가 시작된 뒤 바뀐 내용 |
+| `kiln hook start`, `kiln hook track`, `kiln hook stop` | Claude Code 훅 | 대화가 시작된 뒤 이 대화가 바꾼 내용 |
 | `kiln status` | 직접 실행 | 지금 위치에서 어떤 검사가 어떤 도구로 도는지 |
 | `kiln stats` | 직접 실행 | 훅 기록 요약 |
 
@@ -219,6 +219,12 @@ Claude Code (`~/.claude/settings.json`):
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "kiln hook start" }] }
     ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "kiln hook track" }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "kiln hook track" }] }
+    ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "kiln hook stop", "timeout": 600, "statusMessage": "kiln 검사 중" }] }
     ]
@@ -229,6 +235,8 @@ Claude Code (`~/.claude/settings.json`):
 ### 훅의 동작
 
 - 대화가 시작될 때 작업 폴더 상태를 저장하고, 답변이 끝날 때 그 뒤로 바뀐 파일과 줄만 검사한다. 대화 전부터 고치던 파일은 대화 시작 때 내용과 비교한다.
+- `kiln hook track`(PreToolUse, PostToolUse)을 켜면 이 대화가 바꾼 파일만 검사한다. 도구를 부르기 직전과 직후에 바뀐 파일, 편집 도구가 지정한 파일을 이 대화의 것으로 적어 둔다. 같은 작업 폴더에서 다른 대화나 사람이 고치는 파일은 검사하지 않으므로, 여러 대화가 한 저장소를 같이 써도 서로 막지 않는다. 같은 시각에 다른 대화가 고친 파일은 이 대화의 것으로 잡힐 수 있다.
+- `track`을 켜지 않으면 대화가 시작된 뒤 바뀐 파일을 모두 검사한다.
 - 바뀐 파일이 없거나 마지막으로 통과한 상태와 같으면 건너뛴다.
 - 통과하면 아무것도 출력하지 않는다. 모델 문맥에 들어가는 것이 없어 토큰을 쓰지 않는다.
 - 실패하면 답변 종료를 막고 출력 끝 40줄을 모델에 돌려준다. 프로젝트마다 처음 실패한 명령에서 멈춘다.

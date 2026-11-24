@@ -29,7 +29,7 @@ const USAGE: &str = "사용:
   kiln check --base <ref>    <ref>와 갈라진 뒤 바뀐 내용 검사 (CI)
   kiln check --all           프로젝트 전체 검사 (기존 주석은 목록만 보여 줌)
   kiln commit-msg <file>     커밋 메시지 형식 검사 (commit-msg)
-  kiln hook start|stop       Claude Code 훅
+  kiln hook start|track|stop Claude Code 훅
   kiln status                이 위치에서 어떤 검사가 도는지 보기
   kiln stats                 훅 기록 요약";
 
@@ -364,7 +364,10 @@ fn with_event(mut entry: Value, event: &str) -> Value {
 
 fn hook_stop(root: &Path, session: &str, state: &State) {
     let snapshot = state.load_snapshot(root).unwrap_or_default();
-    let changed = session_files(&git::dirty_files(root), &snapshot);
+    let mut changed = session_files(&git::dirty_files(root), &snapshot);
+    if let Some(touched) = state.load_touched(root) {
+        changed.retain(|(f, _)| touched.contains(f));
+    }
     if changed.is_empty() {
         return;
     }
@@ -448,6 +451,23 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
     println!("{out}");
 }
 
+fn track(root: &Path, cwd: &Path, payload: &Value, state: &State) {
+    let id = payload["tool_use_id"].as_str().unwrap_or("unknown");
+    let dirty = git::dirty_files(root);
+    if payload["hook_event_name"] == "PreToolUse" {
+        state.open_window(id, root, &dirty);
+        return;
+    }
+    let mut changed = state.close_window(id, root, &dirty);
+    for key in ["file_path", "notebook_path"] {
+        if let Some(named) = payload["tool_input"][key].as_str() {
+            let path = cwd.join(named);
+            changed.push(fs::canonicalize(&path).unwrap_or(path));
+        }
+    }
+    state.add_touched(root, &changed);
+}
+
 fn hook(mode: &str) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -468,6 +488,7 @@ fn hook(mode: &str) -> ExitCode {
             state.save_snapshot(&root, &git::dirty_files(&root));
         }
         "stop" => hook_stop(&root, session, &state),
+        "track" => track(&root, &cwd, &payload, &state),
         _ => return usage(),
     }
     ExitCode::SUCCESS
