@@ -90,20 +90,13 @@ impl Repo {
         (!text.trim().is_empty()).then(|| serde_json::from_str(text.trim()).unwrap())
     }
 
-    fn track(&self, event: &str, session: &str, id: &str, file: Option<&str>) {
-        let input = file.map_or(String::new(), |f| {
-            format!(
-                r#","tool_input":{{"file_path":"{}"}}"#,
-                self.root.join(f).display()
-            )
-        });
-        let payload = format!(
-            r#"{{"cwd":"{}","session_id":"{session}","hook_event_name":"{event}","tool_use_id":"{id}"{input}}}"#,
-            self.root.display()
-        );
-        let mut child = self
-            .command()
-            .args(["hook", "track"])
+    fn send(&self, mode: &str, payload: &str, envs: &[(&str, &str)]) -> Option<Value> {
+        let mut cmd = self.command();
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
+            .args(["hook", mode])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -115,7 +108,29 @@ impl Repo {
             .write_all(payload.as_bytes())
             .unwrap();
         let out = child.wait_with_output().unwrap();
-        assert!(out.stdout.is_empty());
+        let text = String::from_utf8_lossy(&out.stdout);
+        (!text.trim().is_empty()).then(|| serde_json::from_str(text.trim()).unwrap())
+    }
+
+    fn hook_at(&self, mode: &str, session: &str, cwd: &Path) -> Option<Value> {
+        let payload = format!(r#"{{"cwd":"{}","session_id":"{session}"}}"#, cwd.display());
+        self.send(mode, &payload, &[])
+    }
+
+    fn track_at(&self, event: &str, session: &str, id: &str, cwd: &Path, file: Option<&Path>) {
+        let input = file.map_or(String::new(), |f| {
+            format!(r#","tool_input":{{"file_path":"{}"}}"#, f.display())
+        });
+        let payload = format!(
+            r#"{{"cwd":"{}","session_id":"{session}","hook_event_name":"{event}","tool_use_id":"{id}"{input}}}"#,
+            cwd.display()
+        );
+        assert_eq!(self.send("track", &payload, &[]), None);
+    }
+
+    fn track(&self, event: &str, session: &str, id: &str, file: Option<&str>) {
+        let path = file.map(|f| self.root.join(f));
+        self.track_at(event, session, id, &self.root, path.as_deref());
     }
 
     fn kiln(&self, args: &[&str]) -> (bool, String) {
@@ -827,4 +842,66 @@ fn other_sessions_changes_do_not_block_a_session_whose_tools_changed_nothing() {
     repo.track("PostToolUse", "s", "t1", None);
     repo.write("other.py", "y = 2  # 다른 세션의 주석\n");
     assert_eq!(repo.hook("stop", "s"), None);
+}
+
+#[test]
+fn a_session_opened_outside_any_repo_checks_the_repos_it_edits() {
+    let repo = Repo::new("outside", PY);
+    let file = repo.root.join("a.py");
+    repo.hook_at("start", "s", &repo.base);
+    repo.track_at("PreToolUse", "s", "t1", &repo.base, Some(&file));
+    repo.write("a.py", "x = 1  # 새 주석\n");
+    repo.track_at("PostToolUse", "s", "t1", &repo.base, Some(&file));
+    let out = repo.hook_at("stop", "s", &repo.base);
+    assert!(blocked(&out));
+    assert!(reason(&out).contains("a.py:1"), "{}", reason(&out));
+}
+
+#[test]
+fn one_session_editing_two_repos_checks_both() {
+    let first = Repo::new("two-first", PY);
+    let second = Repo::new("two-second", PY);
+    let a = first.root.join("a.py");
+    let b = second.root.join("b.py");
+    first.hook_at("start", "s", &first.root);
+    first.track_at("PreToolUse", "s", "t1", &first.root, Some(&a));
+    first.write("a.py", "x = 1  # 첫 저장소\n");
+    first.track_at("PostToolUse", "s", "t1", &first.root, Some(&a));
+    first.track_at("PreToolUse", "s", "t2", &first.root, Some(&b));
+    second.write("b.py", "y = 2  # 둘째 저장소\n");
+    first.track_at("PostToolUse", "s", "t2", &first.root, Some(&b));
+    let out = first.hook_at("stop", "s", &first.root);
+    let text = reason(&out);
+    assert!(text.contains("a.py:1"), "{text}");
+    assert!(text.contains("b.py:1"), "{text}");
+}
+
+#[test]
+fn a_repo_first_touched_mid_session_keeps_earlier_work_as_its_baseline() {
+    let repo = Repo::new("mid", PY);
+    repo.write("a.py", "x = 1\n");
+    repo.commit();
+    repo.write("a.py", "x = 1  # 세션 전부터 있던 주석\n");
+    let file = repo.root.join("a.py");
+    repo.hook_at("start", "s", &repo.base);
+    repo.track_at("PreToolUse", "s", "t1", &repo.base, Some(&file));
+    repo.write("a.py", "x = 1  # 세션 전부터 있던 주석\ny = 2  # 새 주석\n");
+    repo.track_at("PostToolUse", "s", "t1", &repo.base, Some(&file));
+    let text = reason(&repo.hook_at("stop", "s", &repo.base));
+    assert!(text.contains("a.py:2"), "{text}");
+    assert!(!text.contains("a.py:1"), "{text}");
+}
+
+#[test]
+fn session_start_tells_the_model_where_kiln_is_when_it_is_not_on_path() {
+    let repo = Repo::new("path-notice", PY);
+    let payload = format!(r#"{{"cwd":"{}","session_id":"s"}}"#, repo.root.display());
+    let out = repo
+        .send("start", &payload, &[("PATH", "/usr/bin:/bin")])
+        .unwrap();
+    let context = out["hookSpecificOutput"]["additionalContext"].to_string();
+    assert!(context.contains("PATH에 없습니다"), "{context}");
+    let bin = Path::new(env!("CARGO_BIN_EXE_kiln")).parent().unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    assert_eq!(repo.send("start", &payload, &[("PATH", &path)]), None);
 }

@@ -172,26 +172,6 @@ impl State {
         path.is_file().then_some(path)
     }
 
-    pub fn clean_old(&self) {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return;
-        };
-        let now = SystemTime::now();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.file_name().is_some_and(|n| n == LOG_FILE) {
-                continue;
-            }
-            let old = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| now.duration_since(t).unwrap_or_default() > KEEP_FOR);
-            if old {
-                let _ = fs::remove_dir_all(&path).or_else(|_| fs::remove_file(&path));
-            }
-        }
-    }
-
     pub fn log(&self, entry: Value) {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -204,6 +184,52 @@ impl State {
             .open(self.dir.join(LOG_FILE))
         {
             let _ = writeln!(f, "{entry}");
+        }
+    }
+}
+
+fn roots_file(base: &Path, session: &str) -> PathBuf {
+    base.join(format!("roots-{}", hash(&[session])))
+}
+
+pub fn session_roots(base: &Path, session: &str) -> Vec<PathBuf> {
+    fs::read_to_string(roots_file(base, session))
+        .unwrap_or_default()
+        .lines()
+        .map(PathBuf::from)
+        .collect()
+}
+
+pub fn add_session_root(base: &Path, session: &str, root: &Path) {
+    if session_roots(base, session).iter().any(|r| r == root) {
+        return;
+    }
+    let _ = fs::create_dir_all(base);
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(roots_file(base, session))
+    {
+        let _ = writeln!(f, "{}", root.display());
+    }
+}
+
+pub fn clean_old(base: &Path) {
+    let Ok(entries) = fs::read_dir(base) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|n| n == LOG_FILE) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| now.duration_since(t).unwrap_or_default() > KEEP_FOR);
+        if old {
+            let _ = fs::remove_dir_all(&path).or_else(|_| fs::remove_file(&path));
         }
     }
 }

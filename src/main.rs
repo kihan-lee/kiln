@@ -362,14 +362,23 @@ fn with_event(mut entry: Value, event: &str) -> Value {
     entry
 }
 
-fn hook_stop(root: &Path, session: &str, state: &State) {
+struct Stopped {
+    reports: Option<String>,
+    notes: Vec<String>,
+}
+
+fn hook_stop(root: &Path, session: &str, state: &State) -> Stopped {
+    let mut stopped = Stopped {
+        reports: None,
+        notes: Vec::new(),
+    };
     let snapshot = state.load_snapshot(root).unwrap_or_default();
     let mut changed = session_files(&git::dirty_files(root), &snapshot);
     if let Some(touched) = state.load_touched(root) {
         changed.retain(|(f, _)| touched.contains(f));
     }
     if changed.is_empty() {
-        return;
+        return stopped;
     }
     let mut stamp: Vec<String> = changed
         .iter()
@@ -379,7 +388,7 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
     stamp.push(git::head(root));
     let fingerprint = state::hash(&stamp.iter().map(String::as_str).collect::<Vec<_>>());
     if State::read(&state.passed) == fingerprint {
-        return;
+        return stopped;
     }
 
     let files: Vec<PathBuf> = changed.into_iter().map(|(f, _)| f).collect();
@@ -407,22 +416,19 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
         "failed": failed,
         "skipped": report.skipped,
     });
-    let skip_note = (!report.skipped.is_empty() && !state.noticed.exists()).then(|| {
+    if !report.skipped.is_empty() && !state.noticed.exists() {
         let _ = fs::write(&state.noticed, "");
-        format!(
+        stopped.notes.push(format!(
             "실행하지 못해 건너뛴 검사: {} (이 대화에서는 다시 알리지 않음, 자세히: kiln status)",
             report.skipped.join(", ")
-        )
-    });
+        ));
+    }
 
     if report.failures.is_empty() {
         let _ = fs::write(&state.passed, &fingerprint);
         let _ = fs::remove_file(&state.blocks);
         state.log(with_event(base, "pass"));
-        if let Some(note) = skip_note {
-            println!("{}", json!({ "systemMessage": note }));
-        }
-        return;
+        return stopped;
     }
 
     let count = State::read(&state.blocks)
@@ -433,39 +439,124 @@ fn hook_stop(root: &Path, session: &str, state: &State) {
     if count > MAX_BLOCKS {
         let _ = fs::remove_file(&state.blocks);
         state.log(with_event(base, "giveup"));
-        let message = format!("kiln 검사가 {MAX_BLOCKS}번 연속 실패한 채 답변이 끝났습니다");
-        println!("{}", json!({ "systemMessage": message }));
-        return;
+        stopped.notes.push(format!(
+            "kiln 검사가 {MAX_BLOCKS}번 연속 실패한 채 답변이 끝났습니다 ({})",
+            root.display()
+        ));
+        return stopped;
     }
     let _ = fs::write(&state.blocks, count.to_string());
     state.log(with_event(base, "block"));
     let reports: Vec<&str> = report.failures.iter().map(|f| f.report.as_str()).collect();
+    stopped.reports = Some(reports.join("\n\n"));
+    stopped
+}
+
+fn stop(cwd: &Path, session: &str, base: &Path) {
+    let mut reports = Vec::new();
+    let mut notes = Vec::new();
+    for root in session_roots(cwd, session, base) {
+        let state = State::new(base.to_path_buf(), session, &root);
+        let stopped = hook_stop(&root, session, &state);
+        reports.extend(stopped.reports);
+        notes.extend(stopped.notes);
+    }
+    let note = (!notes.is_empty()).then(|| notes.join("\n"));
+    if reports.is_empty() {
+        if let Some(note) = note {
+            println!("{}", json!({ "systemMessage": note }));
+        }
+        return;
+    }
     let reason = format!(
         "kiln 검사가 실패했습니다. 원인을 고친 뒤 끝내세요. 검사를 끄거나 규칙을 무시하는 표시로 넘기지 마세요. 정당한 예외라고 판단되면 넘기지 말고 사용자에게 먼저 확인하세요.\n\n{}",
         reports.join("\n\n")
     );
     let mut out = json!({ "decision": "block", "reason": reason });
-    if let Some(note) = skip_note {
+    if let Some(note) = note {
         out["systemMessage"] = json!(note);
     }
     println!("{out}");
 }
 
-fn track(root: &Path, cwd: &Path, payload: &Value, state: &State) {
-    let id = payload["tool_use_id"].as_str().unwrap_or("unknown");
-    let dirty = git::dirty_files(root);
-    if payload["hook_event_name"] == "PreToolUse" {
-        state.open_window(id, root, &dirty);
-        return;
-    }
-    let mut changed = state.close_window(id, root, &dirty);
-    for key in ["file_path", "notebook_path"] {
-        if let Some(named) = payload["tool_input"][key].as_str() {
-            let path = cwd.join(named);
-            changed.push(fs::canonicalize(&path).unwrap_or(path));
+fn session_roots(cwd: &Path, session: &str, base: &Path) -> Vec<PathBuf> {
+    let mut roots = state::session_roots(base, session);
+    if let Some(root) = git::toplevel(cwd) {
+        if !roots.contains(&root) {
+            roots.insert(0, root);
         }
     }
-    state.add_touched(root, &changed);
+    roots
+}
+
+fn resolve(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
+            return path.to_path_buf();
+        };
+        rest.push(name);
+        existing = parent;
+    }
+    let mut full = fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    for name in rest.into_iter().rev() {
+        full.push(name);
+    }
+    full
+}
+
+fn repo_of(file: &Path) -> Option<PathBuf> {
+    file.ancestors()
+        .skip(1)
+        .find(|d| d.is_dir())
+        .and_then(git::toplevel)
+}
+
+fn track(cwd: &Path, session: &str, base: &Path, payload: &Value) {
+    let id = payload["tool_use_id"].as_str().unwrap_or("unknown");
+    let before = payload["hook_event_name"] == "PreToolUse";
+    let named: Vec<PathBuf> = ["file_path", "notebook_path"]
+        .iter()
+        .filter_map(|key| payload["tool_input"][key].as_str())
+        .map(|n| resolve(&cwd.join(n)))
+        .collect();
+    let mut roots = session_roots(cwd, session, base);
+    for root in named.iter().filter_map(|f| repo_of(f)) {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    for root in roots {
+        let state = State::new(base.to_path_buf(), session, &root);
+        state::add_session_root(base, session, &root);
+        let dirty = git::dirty_files(&root);
+        if before {
+            if state.load_snapshot(&root).is_none() {
+                state.save_snapshot(&root, &dirty);
+            }
+            state.open_window(id, &root, &dirty);
+        } else {
+            let mut changed = state.close_window(id, &root, &dirty);
+            changed.extend(named.iter().filter(|f| f.starts_with(&root)).cloned());
+            state.add_touched(&root, &changed);
+        }
+    }
+}
+
+fn path_notice() -> Option<String> {
+    let exe = env::current_exe().ok()?;
+    let exe = fs::canonicalize(&exe).unwrap_or(exe);
+    let path = env::var("PATH").unwrap_or_default();
+    let on_path = checks::find_on_path("kiln", &path)
+        .and_then(|p| fs::canonicalize(p).ok())
+        .is_some_and(|p| p == exe);
+    (!on_path).then(|| {
+        format!(
+            "kiln이 PATH에 없습니다. kiln 명령은 {}로 실행하세요. 사용자에게는 kiln이 설치된 폴더를 PATH에 넣으라고 알리세요.",
+            exe.display()
+        )
+    })
 }
 
 fn hook(mode: &str) -> ExitCode {
@@ -478,17 +569,24 @@ fn hook(mode: &str) -> ExitCode {
         .or_else(|| env::current_dir().ok())
         .unwrap_or_default();
     let session = payload["session_id"].as_str().unwrap_or("unknown");
-    let Some(root) = git::toplevel(&cwd) else {
-        return ExitCode::SUCCESS;
-    };
-    let state = State::new(State::base_dir(), session, &root);
+    let base = State::base_dir();
     match mode {
         "start" => {
-            state.clean_old();
-            state.save_snapshot(&root, &git::dirty_files(&root));
+            state::clean_old(&base);
+            if let Some(root) = git::toplevel(&cwd) {
+                let state = State::new(base.clone(), session, &root);
+                state.save_snapshot(&root, &git::dirty_files(&root));
+            }
+            if let Some(notice) = path_notice() {
+                let out = json!({ "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": notice,
+                }});
+                println!("{out}");
+            }
         }
-        "stop" => hook_stop(&root, session, &state),
-        "track" => track(&root, &cwd, &payload, &state),
+        "track" => track(&cwd, session, &base, &payload),
+        "stop" => stop(&cwd, session, &base),
         _ => return usage(),
     }
     ExitCode::SUCCESS

@@ -6,11 +6,13 @@
 
 ## 설치
 
+    cargo install --git https://github.com/kihan-lee/kiln --locked
+
+`~/.cargo/bin/kiln`에 설치된다. 새 버전도 같은 명령으로 받는다. `~/.cargo/bin`이 `PATH`에 있어야 한다. rustup으로 Rust를 설치했으면 이미 들어 있다. Homebrew 같은 다른 방법으로 설치했으면 `~/.zshenv`(bash는 `~/.profile`)에 `export PATH="$HOME/.cargo/bin:$PATH"`를 넣는다. `~/.zshrc`는 대화형 셸만 읽으므로 쓰지 않는다. 훅은 세션이 시작될 때 kiln이 `PATH`에 없으면 실행 파일 위치를 모델에 알려 준다.
+
+cargo가 없는 곳(CI 등)에서는 미리 빌드한 실행 파일을 받는다 (Linux x86_64, aarch64, macOS, `~/.local/bin/kiln`):
+
     curl -fsSL https://raw.githubusercontent.com/kihan-lee/kiln/main/scripts/install.sh | bash
-
-`~/.local/bin/kiln`에 미리 빌드한 실행 파일을 받는다 (Linux x86_64, aarch64, macOS). 비공개 저장소일 때는 `gh`로 로그인돼 있으면 `gh`로 받는다. 버전 지정은 `KILN_VERSION=v0.1.0`.
-
-소스에서 설치: `cargo install --path .`
 
 ## 명령
 
@@ -237,6 +239,7 @@ Claude Code (`~/.claude/settings.json`):
 - 대화가 시작될 때 작업 폴더 상태를 저장하고, 답변이 끝날 때 그 뒤로 바뀐 파일과 줄만 검사한다. 대화 전부터 고치던 파일은 대화 시작 때 내용과 비교한다.
 - `kiln hook track`(PreToolUse, PostToolUse)을 켜면 이 대화가 바꾼 파일만 검사한다. 도구를 부르기 직전과 직후에 바뀐 파일, 편집 도구가 지정한 파일을 이 대화의 것으로 적어 둔다. 같은 작업 폴더에서 다른 대화나 사람이 고치는 파일은 검사하지 않으므로, 여러 대화가 한 저장소를 같이 써도 서로 막지 않는다. 같은 시각에 다른 대화가 고친 파일은 이 대화의 것으로 잡힐 수 있다.
 - `track`을 켜지 않으면 대화가 시작된 뒤 바뀐 파일을 모두 검사한다.
+- 저장소는 대화를 연 폴더가 아니라 고친 파일로 찾는다. 상위 폴더(예: `~/Desktop`)에서 연 대화도, 한 대화에서 고친 저장소 여러 개도 각각 검사한다. 처음 건드린 저장소는 그 순간의 작업 폴더 상태를 기준으로 삼는다. 대화를 연 폴더 밖의 저장소를 편집 도구 없이 셸 명령으로만 고치면 찾지 못한다.
 - 바뀐 파일이 없거나 마지막으로 통과한 상태와 같으면 건너뛴다.
 - 통과하면 아무것도 출력하지 않는다. 모델 문맥에 들어가는 것이 없어 토큰을 쓰지 않는다.
 - 실패하면 답변 종료를 막고 출력 끝 40줄을 모델에 돌려준다. 프로젝트마다 처음 실패한 명령에서 멈춘다.
