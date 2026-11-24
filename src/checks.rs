@@ -14,11 +14,29 @@ pub enum Outcome {
     Missing,
 }
 
+fn cmake_project(dir: &Path) -> bool {
+    fs::read_to_string(dir.join("CMakeLists.txt"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .any(|l| {
+            l.strip_prefix("project")
+                .is_some_and(|rest| rest.trim_start().starts_with('('))
+        })
+}
+
+pub fn is_project(dir: &Path) -> bool {
+    ["pyproject.toml", "Cargo.toml", "kiln.toml"]
+        .iter()
+        .any(|n| dir.join(n).is_file())
+        || cmake_project(dir)
+}
+
 pub fn projects(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for f in files {
         for dir in f.ancestors().skip(1) {
-            if dir.join("pyproject.toml").is_file() || dir.join("Cargo.toml").is_file() {
+            if is_project(dir) {
                 if !found.iter().any(|d| d == dir) {
                     found.push(dir.to_path_buf());
                 }

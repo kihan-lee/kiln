@@ -26,7 +26,7 @@
 
 ## 검사 내용
 
-바뀐 파일에서 위로 올라가며 가장 가까운 `pyproject.toml`이나 `Cargo.toml`을 찾고, 그 프로젝트에 설정된 도구만 돌린다. 템플릿이 아닌 프로젝트에서도 그대로 동작한다. 설정이 없는 프로젝트에서는 아무것도 하지 않는다.
+바뀐 파일에서 위로 올라가며 가장 가까운 프로젝트 폴더를 찾고, 그 프로젝트에 설정된 도구만 돌린다. 프로젝트 폴더는 `pyproject.toml`, `Cargo.toml`, `kiln.toml`, 또는 `project(`를 선언한 `CMakeLists.txt`가 있는 곳이다. `add_subdirectory`로 들어가는 하위 `CMakeLists.txt`는 `project(`가 없으므로 상위 프로젝트에 속한다. 템플릿이 아닌 프로젝트에서도 그대로 동작한다. 설정이 없는 프로젝트에서는 아무것도 하지 않는다.
 
 가상환경을 만들거나 의존성을 설치하지 않는다. 도구는 아래 순서로 찾는다.
 
@@ -92,6 +92,20 @@ exts = ["tla", "py"]
 | `exts` | 이 확장자의 파일이 바뀔 때만 돌린다. 없으면 프로젝트 안의 파일이 하나라도 바뀌면 돈다. `--all`에서는 항상 돈다 |
 
 내장 검사가 모두 통과한 뒤 적은 순서대로 돌고, 처음 실패한 것에서 멈춘다. 저장소 설정 파일에 적은 명령을 그대로 실행하므로, 믿을 수 없는 저장소에서는 `kiln check`를 돌리기 전에 이 설정을 확인한다.
+
+### kiln.toml
+
+`pyproject.toml`이나 `Cargo.toml`이 없는 프로젝트(CMake로 빌드하는 CUDA 등)는 프로젝트 폴더의 `kiln.toml`에 설정한다. 키는 `[tool.kiln]`과 같고 맨 위에 바로 쓴다. 같은 키가 여러 곳에 있으면 `kiln.toml`이 먼저다. 모르는 키는 오류로 알린다.
+
+```toml
+comments = false
+docs = ["docs", "README.md"]
+
+[[check]]
+name = "ctest"
+run = "cmake --build build && ctest --test-dir build --output-on-failure"
+exts = ["cu", "cuh", "cpp", "h"]
+```
 
 ### 주석과 검사 끄기 표시
 

@@ -213,12 +213,7 @@ fn rule(
             .map_or(String::new(), |p| p.display().to_string());
         return Some((value, source));
     }
-    let source = if dir.join("pyproject.toml").is_file() {
-        "pyproject.toml의 [tool.kiln]"
-    } else {
-        "Cargo.toml의 [package.metadata.kiln]"
-    };
-    config::local(dir, key).map(|value| (value, source.into()))
+    config::local(dir, key).map(|(value, source)| (value, source.into()))
 }
 
 fn docs_rule(dir: &Path, root: &Path, main_root: &Path, config: &Config) -> Option<Vec<String>> {
@@ -285,9 +280,11 @@ fn status() -> ExitCode {
     let Some(dir) = cwd
         .ancestors()
         .take_while(|d| d.starts_with(&root))
-        .find(|d| d.join("pyproject.toml").is_file() || d.join("Cargo.toml").is_file())
+        .find(|d| checks::is_project(d))
     else {
-        println!("pyproject.toml이나 Cargo.toml이 없어 돌릴 검사가 없습니다");
+        println!(
+            "pyproject.toml, Cargo.toml, CMakeLists.txt, kiln.toml이 없어 돌릴 검사가 없습니다"
+        );
         return ExitCode::SUCCESS;
     };
     let main_root = git::main_worktree(&root);

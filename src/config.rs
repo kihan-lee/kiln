@@ -112,10 +112,13 @@ pub struct Custom {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct Kiln {
     #[serde(default)]
     check: Vec<Custom>,
     docs: Option<Vec<String>>,
+    comments: Option<bool>,
+    tests: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -138,19 +141,44 @@ struct Manifest {
     package: Package,
 }
 
-fn read_kiln(dir: &Path) -> Result<Kiln, String> {
-    let mut found = Kiln::default();
-    for name in ["pyproject.toml", "Cargo.toml"] {
-        let text = fs::read_to_string(dir.join(name)).unwrap_or_default();
+fn sources(dir: &Path) -> Vec<(&'static str, Result<Kiln, String>)> {
+    let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let error = |name: &str, e: toml::de::Error| format!("{name}: {}", e.message());
+    let mut found = Vec::new();
+    if dir.join("kiln.toml").is_file() {
+        found.push((
+            "kiln.toml",
+            toml::from_str::<Kiln>(&read("kiln.toml")).map_err(|e| error("kiln.toml", e)),
+        ));
+    }
+    for (name, label) in [
+        ("pyproject.toml", "pyproject.toml의 [tool.kiln]"),
+        ("Cargo.toml", "Cargo.toml의 [package.metadata.kiln]"),
+    ] {
+        let text = read(name);
         if !text.contains("kiln") {
             continue;
         }
-        let manifest: Manifest =
-            toml::from_str(&text).map_err(|e| format!("{name}: {}", e.message()))?;
-        for kiln in [manifest.tool.kiln, manifest.package.metadata.kiln] {
-            found.check.extend(kiln.check);
-            found.docs = found.docs.or(kiln.docs);
-        }
+        let parsed = toml::from_str::<Manifest>(&text)
+            .map(|m| {
+                if name == "pyproject.toml" {
+                    m.tool.kiln
+                } else {
+                    m.package.metadata.kiln
+                }
+            })
+            .map_err(|e| error(name, e));
+        found.push((label, parsed));
+    }
+    found
+}
+
+fn read_kiln(dir: &Path) -> Result<Kiln, String> {
+    let mut found = Kiln::default();
+    for (_, kiln) in sources(dir) {
+        let kiln = kiln?;
+        found.check.extend(kiln.check);
+        found.docs = found.docs.or(kiln.docs);
     }
     Ok(found)
 }
@@ -163,18 +191,15 @@ pub fn local_docs(dir: &Path) -> Option<Vec<String>> {
     read_kiln(dir).ok().and_then(|k| k.docs)
 }
 
-pub fn local(dir: &Path, key: &str) -> Option<bool> {
-    ["pyproject.toml", "Cargo.toml"].iter().find_map(|name| {
-        fs::read_to_string(dir.join(name))
-            .unwrap_or_default()
-            .lines()
-            .map(str::trim)
-            .skip_while(|l| !(l.starts_with('[') && l.ends_with("kiln]")))
-            .skip(1)
-            .take_while(|l| !l.starts_with('['))
-            .filter_map(|l| l.split_once('='))
-            .find(|(k, _)| k.trim() == key)
-            .and_then(|(_, v)| v.trim().parse().ok())
+pub fn local(dir: &Path, key: &str) -> Option<(bool, &'static str)> {
+    sources(dir).into_iter().find_map(|(label, kiln)| {
+        let kiln = kiln.ok()?;
+        let value = match key {
+            "comments" => kiln.comments,
+            "tests" => kiln.tests,
+            _ => None,
+        };
+        value.map(|v| (v, label))
     })
 }
 
@@ -228,6 +253,27 @@ mod tests {
         .unwrap();
         let error = super::custom_checks(&base).err().unwrap_or_default();
         assert!(error.contains("when"), "{error}");
+    }
+
+    #[test]
+    fn kiln_toml_settings_come_first_and_reject_typos() {
+        let base = std::env::temp_dir().join(format!("kiln-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("kiln.toml"), "comments = false\n").unwrap();
+        std::fs::write(
+            base.join("pyproject.toml"),
+            "[tool.kiln]\ncomments = true\ntests = true\n",
+        )
+        .unwrap();
+        assert_eq!(super::local(&base, "comments"), Some((false, "kiln.toml")));
+        assert_eq!(
+            super::local(&base, "tests"),
+            Some((true, "pyproject.toml의 [tool.kiln]"))
+        );
+
+        std::fs::write(base.join("kiln.toml"), "coments = false\n").unwrap();
+        assert!(super::custom_checks(&base).is_err());
     }
 
     #[test]

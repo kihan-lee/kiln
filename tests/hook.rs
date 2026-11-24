@@ -528,6 +528,24 @@ fn clang_format_runs_on_changed_files_when_configured() {
 }
 
 #[test]
+fn cmake_project_root_is_the_one_that_declares_project() {
+    let repo = Repo::new(
+        "cmake",
+        (
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.24)\nproject (x LANGUAGES CXX CUDA)\nadd_subdirectory(src)\n",
+        ),
+    );
+    repo.write("src/CMakeLists.txt", "add_library(k k.cu)\n");
+    repo.write("kiln.toml", "comments = false\n");
+    repo.commit();
+    repo.hook("start", "s");
+    repo.write("src/k.cu", "__global__ void k() {} // 설명\n");
+    let text = reason(&repo.hook("stop", "s"));
+    assert!(text.contains("src/k.cu:1"), "{text}");
+}
+
+#[test]
 fn ruff_is_found_on_path_but_ty_needs_an_environment() {
     let repo = Repo::new(
         "path",
