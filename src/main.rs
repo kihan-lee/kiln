@@ -552,9 +552,36 @@ fn track(cwd: &Path, session: &str, base: &Path, payload: &Value) {
             state.add_touched(&root, &changed);
         }
     }
-    if !before {
-        state::add_named(base, session, &named);
+    let mut claimed = named;
+    claimed.extend(mentioned_files(cwd, &payload["tool_input"]));
+    state::add_named(base, session, &claimed);
+}
+
+fn mentioned_files(cwd: &Path, input: &Value) -> Vec<PathBuf> {
+    let home = env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let mut found: Vec<PathBuf> = Vec::new();
+    for key in ["command", "code"] {
+        let Some(text) = input[key].as_str() else {
+            continue;
+        };
+        let tokens = text.split(|c: char| c.is_whitespace() || "\"'`()[]{};,=|&<>$".contains(c));
+        for token in tokens.filter(|t| t.contains('/') || t.contains('.')) {
+            let path = match token.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => cwd.join(token),
+            };
+            if path.is_file() {
+                let path = resolve(&path);
+                if !found.contains(&path) {
+                    found.push(path);
+                }
+            }
+            if found.len() >= MENTION_LIMIT {
+                return found;
+            }
+        }
     }
+    found
 }
 
 const MENTION_LIMIT: usize = 64;

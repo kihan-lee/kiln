@@ -241,6 +241,8 @@ fn named_file(base: &Path, session: &str) -> PathBuf {
 }
 
 pub fn add_named(base: &Path, session: &str, files: &[PathBuf]) {
+    let known = read_named(&named_file(base, session));
+    let files: Vec<&PathBuf> = files.iter().filter(|f| !known.contains(*f)).collect();
     if files.is_empty() {
         return;
     }

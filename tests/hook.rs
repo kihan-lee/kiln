@@ -944,3 +944,24 @@ fn files_another_session_edited_during_this_sessions_tool_are_left_to_it() {
     let theirs = reason(&repo.hook("stop", "theirs"));
     assert!(theirs.contains("other.py"), "{theirs}");
 }
+
+#[test]
+fn files_another_session_names_in_a_script_are_left_to_it() {
+    let repo = Repo::new("foreign-script", PY);
+    repo.write("other.py", "y = 2\n");
+    repo.commit();
+    let code = r#"{"code":"await edit('other.py', 'y = 2', 'y = 3')"}"#;
+    repo.hook("start", "mine");
+    repo.hook("start", "theirs");
+    repo.track("PreToolUse", "mine", "t1", None);
+    repo.track_input("PreToolUse", "theirs", "t2", &repo.root, code);
+    repo.write("other.py", "y = 3  # 다른 세션의 주석\n");
+    repo.track_input("PostToolUse", "theirs", "t2", &repo.root, code);
+    repo.write("mine.py", "x = 1  # 이 세션의 주석\n");
+    repo.track("PostToolUse", "mine", "t1", None);
+    let text = reason(&repo.hook("stop", "mine"));
+    assert!(text.contains("mine.py"), "{text}");
+    assert!(!text.contains("other.py"), "{text}");
+    let theirs = reason(&repo.hook("stop", "theirs"));
+    assert!(theirs.contains("other.py"), "{theirs}");
+}
