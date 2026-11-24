@@ -18,7 +18,7 @@
 |---|---|---|
 | `kiln check --staged` | pre-commit | 커밋할 내용 |
 | `kiln check --base <ref>` | CI | `<ref>`와 갈라진 뒤 바뀐 내용 |
-| `kiln check --all` | 직접 실행 | 프로젝트 전체 (새 주석 검사는 제외) |
+| `kiln check --all` | 직접 실행 | 프로젝트 전체 (기존 주석과 검사 끄기 표시는 목록만 보여 주고 실패로 치지 않음) |
 | `kiln commit-msg <file>` | commit-msg | 커밋 메시지 형식 |
 | `kiln hook start`, `kiln hook stop` | Claude Code 훅 | 대화가 시작된 뒤 바뀐 내용 |
 | `kiln status` | 직접 실행 | 지금 위치에서 어떤 검사가 어떤 도구로 도는지 |

@@ -25,7 +25,7 @@ const FINDING_LIMIT: usize = 20;
 const USAGE: &str = "사용:
   kiln check --staged        커밋할 내용 검사 (pre-commit)
   kiln check --base <ref>    <ref>와 갈라진 뒤 바뀐 내용 검사 (CI)
-  kiln check --all           프로젝트 전체 검사 (새 주석 검사 제외)
+  kiln check --all           프로젝트 전체 검사 (기존 주석은 목록만 보여 줌)
   kiln commit-msg <file>     커밋 메시지 형식 검사 (commit-msg)
   kiln hook start|stop       Claude Code 훅
   kiln status                이 위치에서 어떤 검사가 도는지 보기
@@ -41,22 +41,28 @@ struct Failure {
 #[derive(Default)]
 struct Report {
     failures: Vec<Failure>,
+    existing: Vec<Failure>,
     skipped: Vec<String>,
 }
 
-fn findings_failure(dir: &Path, found: &[comments::Finding]) -> Vec<Failure> {
+fn findings_failure(dir: &Path, found: &[comments::Finding], existing: bool) -> Vec<Failure> {
+    let (age, limit) = if existing {
+        ("기존", usize::MAX)
+    } else {
+        ("새로 추가된", FINDING_LIMIT)
+    };
     let mut failures = Vec::new();
     for (kind, check, title, guide) in [
         (
             Kind::Suppression,
             "suppressions",
-            "새로 추가된 검사 끄기 표시",
+            "검사 끄기 표시",
             "검사를 끄는 표시(noqa, type: ignore, #[allow] 등)는 쓰지 않습니다. 원인을 고치세요. 정말 필요한 예외는 줄에 붙이지 말고 설정 파일(pyproject.toml의 per-file-ignores, Cargo.toml의 [lints])에 모읍니다.",
         ),
         (
             Kind::Comment,
             "comments",
-            "새로 추가된 주석과 파일 맨 위 설명문",
+            "주석과 파일 맨 위 설명문",
             "주석 대신 이름, 타입, 테스트로 뜻을 드러내세요. 코드로 드러낼 수 없는 이유만 '이유:'로 시작하는 한 줄 주석으로 남길 수 있습니다. 파일 맨 위 설명문은 쓰지 않습니다.",
         ),
     ] {
@@ -68,13 +74,13 @@ fn findings_failure(dir: &Path, found: &[comments::Finding]) -> Vec<Failure> {
         if hits.is_empty() {
             continue;
         }
-        let shown: Vec<&str> = hits.iter().take(FINDING_LIMIT).copied().collect();
+        let shown: Vec<&str> = hits.iter().take(limit).copied().collect();
         failures.push(Failure {
             project: dir.to_path_buf(),
             check: check.into(),
             count: hits.len(),
             report: format!(
-                "{}$ {title} {}건\n{}\n{guide}",
+                "{}$ {age} {title} {}건\n{}\n{guide}",
                 dir.display(),
                 hits.len(),
                 shown.join("\n")
@@ -108,8 +114,12 @@ fn evaluate(
             .collect();
         if comment_rule(&dir, root, &main_root, &config).0 {
             let found = comments::new_findings(root, &dir, &inside, baseline);
-            if !found.is_empty() {
-                report.failures.extend(findings_failure(&dir, &found));
+            if whole {
+                report.existing.extend(findings_failure(&dir, &found, true));
+            } else if !found.is_empty() {
+                report
+                    .failures
+                    .extend(findings_failure(&dir, &found, false));
                 continue;
             }
         }
@@ -368,7 +378,7 @@ fn check(args: &[String]) -> ExitCode {
                 false,
             )
         }
-        Some("--all") => (scope::tracked_files(&root), Baseline::Nothing, true),
+        Some("--all") => (scope::tracked_files(&root), Baseline::Everything, true),
         _ => return usage(),
     };
     let report = evaluate(&root, &files, whole, &baseline, true);
@@ -377,6 +387,12 @@ fn check(args: &[String]) -> ExitCode {
     }
     for failure in &report.failures {
         eprintln!("{}\n", failure.report);
+    }
+    if !report.existing.is_empty() {
+        eprintln!("정리할 기존 표시 (실패로 치지 않음)\n");
+    }
+    for item in &report.existing {
+        eprintln!("{}\n", item.report);
     }
     if report.failures.is_empty() {
         ExitCode::SUCCESS

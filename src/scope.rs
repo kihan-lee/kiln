@@ -10,7 +10,7 @@ pub enum Baseline<'a> {
     },
     Index,
     Ref(String),
-    Nothing,
+    Everything,
 }
 
 impl Baseline<'_> {
@@ -30,7 +30,7 @@ impl Baseline<'_> {
             Baseline::Ref(base) => git::is_tracked(root, file).then(|| {
                 git::added_lines_from_diff(&git::git(root, &["diff", base, "-U0", "--", &name]))
             }),
-            Baseline::Nothing => Some(Vec::new()),
+            Baseline::Everything => None,
         }
     }
 }
