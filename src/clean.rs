@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-const HELPER: &str = include_str!("adopt.py");
+const HELPER: &str = include_str!("clean.py");
 
 #[derive(Default, PartialEq, Debug)]
 pub struct Cleaned {
@@ -210,7 +210,7 @@ fn clean(paths: &[String]) -> ExitCode {
         if suppressions > 0 {
             println!("  - 검사 끄기 표시를 지웠으므로 ruff, ty가 실패할 수 있습니다. 원인을 고치거나 설정(per-file-ignores 등)으로 옮깁니다");
         }
-        println!("  - 주석 삭제만 따로 커밋합니다. 나중에 kiln adopt verify --base <그 커밋>^로 다시 확인할 수 있습니다");
+        println!("  - 주석 삭제만 따로 커밋합니다. 나중에 kiln clean --verify --base <그 커밋>^로 다시 확인할 수 있습니다");
         println!("  - 다시 생기지 않도록 [tool.kiln] comments = false를 켭니다");
     }
     ExitCode::SUCCESS
@@ -225,7 +225,7 @@ fn verify(args: &[String]) -> ExitCode {
         [] => "HEAD".to_string(),
         [flag, r] if flag == "--base" => r.clone(),
         _ => {
-            eprintln!("사용: kiln adopt verify [--base <ref>]");
+            eprintln!("사용: kiln clean --verify [--base <ref>]");
             return ExitCode::from(2);
         }
     };
@@ -280,12 +280,12 @@ fn verify(args: &[String]) -> ExitCode {
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
-        Some("clean") => clean(&args[1..]),
-        Some("verify") => verify(&args[1..]),
-        _ => {
-            eprintln!("사용:\n  kiln adopt clean [경로...]\n  kiln adopt verify [--base <ref>]");
+        Some("--verify") => verify(&args[1..]),
+        _ if args.iter().any(|a| a.starts_with('-')) => {
+            eprintln!("사용:\n  kiln clean [경로...]\n  kiln clean --verify [--base <ref>]");
             ExitCode::from(2)
         }
+        _ => clean(args),
     }
 }
 

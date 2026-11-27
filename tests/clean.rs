@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn repo(name: &str, files: &[(&str, &str)]) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("kiln-adopt-{}-{name}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("kiln-clean-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "-q"]);
@@ -47,7 +47,7 @@ fn clean_removes_comments_and_module_docstring_and_verify_accepts_it() {
             ("cli.py", "\"\"\"사용법\"\"\"\nimport argparse\n\nargparse.ArgumentParser(description=__doc__)  # 설명\n"),
         ],
     );
-    let out = kiln(&root, &["adopt", "clean"]);
+    let out = kiln(&root, &["clean"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     assert_eq!(
@@ -59,10 +59,10 @@ fn clean_removes_comments_and_module_docstring_and_verify_accepts_it() {
         "\"\"\"사용법\"\"\"\nimport argparse\n\nargparse.ArgumentParser(description=__doc__)\n"
     );
     assert!(stdout.contains("__doc__를 써서 설명문 유지"), "{stdout}");
-    assert!(kiln(&root, &["adopt", "verify"]).status.success());
+    assert!(kiln(&root, &["clean", "--verify"]).status.success());
 
     fs::write(root.join("a.py"), "import os\n\n\ndef f():\n    return 2\n").unwrap();
-    let out = kiln(&root, &["adopt", "verify"]);
+    let out = kiln(&root, &["clean", "--verify"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("a.py"));
 }
@@ -71,7 +71,7 @@ fn clean_removes_comments_and_module_docstring_and_verify_accepts_it() {
 fn clean_refuses_files_with_uncommitted_changes() {
     let root = repo("dirty", &[("a.py", "x = 1  # c\n")]);
     fs::write(root.join("a.py"), "x = 2  # c\n").unwrap();
-    let out = kiln(&root, &["adopt", "clean"]);
+    let out = kiln(&root, &["clean"]);
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(
         fs::read_to_string(root.join("a.py")).unwrap(),
