@@ -25,6 +25,8 @@ cargo가 없는 곳(CI 등)에서는 미리 빌드한 실행 파일을 받는다
 | `kiln hook start`, `kiln hook track`, `kiln hook stop` | Claude Code 훅 | 대화가 시작된 뒤 이 대화가 바꾼 내용 |
 | `kiln status` | 직접 실행 | 지금 위치에서 어떤 검사가 어떤 도구로 도는지 |
 | `kiln stats` | 직접 실행 | 훅 기록 요약 |
+| `kiln adopt strip [경로...]` | 직접 실행 | 기존 파이썬 주석과 검사 끄기 표시를 전부 지움 |
+| `kiln adopt verify [--base <ref>]` | 직접 실행, CI | `<ref>` 뒤로 주석과 설명문만 바뀌었는지 |
 
 ## 검사 내용
 
@@ -144,6 +146,24 @@ exts = ["cu", "cuh", "cpp", "h"]
 - CUDA, C, C++는 `//` 주석과 `/* */` 주석의 각 줄을 본다. 문자열, raw 문자열(`R"(...)"`), 문자 리터럴 안은 주석이 아니고, 숫자 구분자(`1'000`)도 처리한다. 문서 주석(`///`, `//!`, `/** */`, `/*! */`)은 막지 않는다.
 - 검사 끄기 표시를 막는다: `noqa`, `type: ignore`, `ty: ignore`, `pyright: ignore`, `mypy: ignore`, `ruff: noqa`, `pylint: disable`, Rust의 `#[allow(`, `#[expect(`, C 계열의 `NOLINT`, `#pragma nv_diag_suppress`, `#pragma diag_suppress`, `#pragma GCC diagnostic ignored`, `#pragma clang diagnostic ignored`, `#pragma warning(disable`, yaml의 `ignore-check.kube-linter.io/` annotation. yaml은 이 annotation만 보고 주석은 보지 않는다. 꼭 필요한 예외는 설정 파일(`per-file-ignores`, `[lints]`)에 모은다.
 - 통과하는 주석: 도구 지시(`pragma`, `fmt:`, `type:` 타입 주석, `coding`, `clang-format`), 첫 줄의 `#!`.
+
+### 기존 주석 정리 (adopt)
+
+kiln을 쓰지 않던 저장소에서 `comments = false`를 켜기 전에 기존 주석을 한 번에 지운다. 주석은 변명이 담기기 쉬우므로 옮길 곳을 따지지 않고 지운다. 지켜야 할 제약이었다면 테스트, assert, 타입으로 옮긴다. 지운 원문은 git 기록에 남는다. 지금은 파이썬만 지원한다.
+
+    kiln adopt strip            # 지금 폴더 아래 git이 추적하는 .py 파일
+    kiln adopt strip src tests  # 경로 지정
+    kiln adopt verify           # HEAD 대비 주석과 설명문만 바뀌었는지 확인
+
+- `strip`은 주석 검사가 막는 것(주석, 검사 끄기 표시, 파일 맨 위 설명문)을 지운다. 줄 전체가 주석이면 줄을 지우고, 줄 끝 주석은 주석만 지운다. 통과하는 주석(`#!`, 인코딩 선언, `# type:`, `# fmt:`, `# pragma`)과 함수, 클래스 설명문은 남긴다.
+- 파일마다 지우기 전과 뒤의 AST(실행에 영향을 주는 것만 남긴 구문 트리)를 비교해 같을 때만 쓴다. 다르거나 구문 분석에 실패하면 그 파일은 건드리지 않고 목록으로 알린다.
+- 파일 맨 위 설명문은 doctest(`>>>`)가 있거나 파일이 `__doc__`를 쓰면 남긴다. 지우면 동작이나 테스트가 바뀌기 때문이다.
+- 커밋하지 않은 변경이 있는 파일이 대상에 있으면 실행하지 않는다. 주석 삭제만 담은 커밋으로 남겨야 리뷰와 되돌리기가 쉽다.
+- 검사 끄기 표시를 지우면 ruff, ty가 실패할 수 있다. 원인을 고치거나 설정(`per-file-ignores` 등)으로 옮긴다.
+- `verify`는 `<ref>`(기본 `HEAD`)와 작업 폴더의 바뀐 `.py` 파일을 AST로 비교해, 주석과 설명문 말고 코드가 바뀐 파일이 있으면 실패한다. 손으로 정리한 커밋이나 정리 중 섞여 들어간 수정을 잡는다.
+- 파이썬은 프로젝트 `.venv`, 활성 가상환경, `PATH`의 `python3` 순서로 찾는다. 프로젝트가 쓰는 문법을 읽을 수 있는 버전이어야 한다.
+
+Python 3.15 표준 라이브러리 2,062개 파일에서 1,752개 파일, 주석 103,772개를 지웠고 `verify`가 통과했다. 일부러 문법 오류를 넣은 테스트 파일 3개와, 주석 찾기가 3.12부터 바뀐 f-string 문법(PEP 701, f-string 안의 주석과 따옴표 재사용)을 잘못 읽은 파일 1개는 AST 비교에서 걸려 그대로 남았다.
 
 ### 새 문서 파일과 규칙 파일
 

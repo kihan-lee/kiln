@@ -1,3 +1,4 @@
+mod adopt;
 mod checks;
 mod comments;
 mod commit_msg;
@@ -31,7 +32,9 @@ const USAGE: &str = "사용:
   kiln commit-msg <file>     커밋 메시지 형식 검사 (commit-msg)
   kiln hook start|track|stop Claude Code 훅
   kiln status                이 위치에서 어떤 검사가 도는지 보기
-  kiln stats                 훅 기록 요약";
+  kiln stats                 훅 기록 요약
+  kiln adopt strip [경로...]  기존 주석과 검사 끄기 표시를 전부 지움 (코드가 같은지 AST로 확인)
+  kiln adopt verify [--base <ref>]  <ref> 이후 주석 말고 코드가 바뀐 파이썬 파일이 없는지 확인";
 
 struct Failure {
     project: PathBuf,
@@ -767,6 +770,7 @@ fn main() -> ExitCode {
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("check") => check(rest),
+        Some("adopt") => adopt::run(rest),
         Some("commit-msg") => commit_msg(rest),
         Some("hook") => hook(rest.first().map_or("", String::as_str)),
         Some("stats") => {

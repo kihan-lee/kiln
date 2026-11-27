@@ -278,8 +278,10 @@ pub fn classify(text: &str, line: usize) -> Option<Kind> {
         return Some(Kind::Suppression);
     }
     let body = segments.first().map_or("", String::as_str);
-    let allowed =
-        (line == 1 && text.starts_with("#!")) || DIRECTIVES.iter().any(|d| body.starts_with(d));
+    let encoding = line <= 2 && (body.contains("coding:") || body.contains("coding="));
+    let allowed = (line == 1 && text.starts_with("#!"))
+        || encoding
+        || DIRECTIVES.iter().any(|d| body.starts_with(d));
     (!allowed).then_some(Kind::Comment)
 }
 
@@ -514,6 +516,8 @@ mod tests {
         assert_eq!(classify("#!/usr/bin/env python3", 1), None);
         assert_eq!(classify("#!/usr/bin/env python3", 2), Some(Kind::Comment));
         assert_eq!(classify("# fmt: off", 3), None);
+        assert_eq!(classify("# -*- coding: utf-8 -*-", 2), None);
+        assert_eq!(classify("# -*- coding: utf-8 -*-", 3), Some(Kind::Comment));
         assert_eq!(classify("# pragma: no cover", 3), None);
         assert_eq!(classify("#[allow(dead_code)]", 3), Some(Kind::Suppression));
     }
