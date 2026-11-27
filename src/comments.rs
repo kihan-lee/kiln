@@ -159,7 +159,26 @@ fn line_end(chars: &[char], from: usize) -> usize {
     j
 }
 
+pub enum CMark {
+    Pragma(usize, String),
+    Comment {
+        pieces: Vec<(usize, String)>,
+        start: usize,
+        end: usize,
+    },
+}
+
 pub fn c_marks(src: &str) -> Vec<(usize, String)> {
+    c_comment_marks(src)
+        .into_iter()
+        .flat_map(|m| match m {
+            CMark::Pragma(n, text) => vec![(n, text)],
+            CMark::Comment { pieces, .. } => pieces,
+        })
+        .collect()
+}
+
+pub fn c_comment_marks(src: &str) -> Vec<CMark> {
     let chars: Vec<char> = src.chars().collect();
     let mut found = Vec::new();
     let (mut i, mut line, mut line_start) = (0, 1, true);
@@ -183,7 +202,7 @@ pub fn c_marks(src: &str) -> Vec<(usize, String)> {
             let words: Vec<&str> = text[1..].split_whitespace().collect();
             let normal = format!("#{}", words.join(" "));
             if C_SUPPRESSIONS.iter().any(|p| normal.starts_with(p)) {
-                found.push((line, normal));
+                found.push(CMark::Pragma(line, normal));
             }
             i += 1;
         } else if c == '/' && next == Some('/') {
@@ -191,7 +210,11 @@ pub fn c_marks(src: &str) -> Vec<(usize, String)> {
             let text: String = chars[i..end].iter().collect();
             let text = text.lines().next().unwrap_or("").trim().to_string();
             if !(text.starts_with("///") || text.starts_with("//!")) {
-                found.push((line, text));
+                found.push(CMark::Comment {
+                    pieces: vec![(line, text)],
+                    start: line,
+                    end: line + newlines(i, end),
+                });
             }
             line += newlines(i, end);
             i = end;
@@ -203,11 +226,17 @@ pub fn c_marks(src: &str) -> Vec<(usize, String)> {
                 .map_or(chars.len(), |j| j + 2);
             if !doc {
                 let body: String = chars[i..end].iter().collect();
-                for (k, part) in body.split('\n').enumerate() {
-                    if !part.trim().is_empty() {
-                        found.push((line + k, part.trim().to_string()));
-                    }
-                }
+                let pieces = body
+                    .split('\n')
+                    .enumerate()
+                    .filter(|(_, part)| !part.trim().is_empty())
+                    .map(|(k, part)| (line + k, part.trim().to_string()))
+                    .collect();
+                found.push(CMark::Comment {
+                    pieces,
+                    start: line,
+                    end: line + newlines(i, end),
+                });
             }
             line += newlines(i, end);
             i = end;
@@ -391,13 +420,20 @@ fn sql_marks(src: &str) -> Vec<(usize, String)> {
 
 pub fn marks(file: &Path) -> Vec<(usize, String)> {
     let src = fs::read_to_string(file).unwrap_or_default();
-    match file.extension().and_then(|x| x.to_str()) {
-        Some("py") => python_marks(&src),
-        Some("rs") => rust_marks(&src),
-        Some(x) if C_EXTS.contains(&x) => c_marks(&src),
-        Some("yaml" | "yml") => hash_marks(&src, true),
-        Some("sh" | "bash") => hash_marks(&src, false),
-        Some("sql") => sql_marks(&src),
+    marks_in(
+        &src,
+        file.extension().and_then(|x| x.to_str()).unwrap_or(""),
+    )
+}
+
+pub fn marks_in(src: &str, ext: &str) -> Vec<(usize, String)> {
+    match ext {
+        "py" => python_marks(src),
+        "rs" => rust_marks(src),
+        x if C_EXTS.contains(&x) => c_marks(src),
+        "yaml" | "yml" => hash_marks(src, true),
+        "sh" | "bash" => hash_marks(src, false),
+        "sql" => sql_marks(src),
         _ => Vec::new(),
     }
 }

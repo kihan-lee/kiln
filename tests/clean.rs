@@ -78,3 +78,28 @@ fn clean_refuses_files_with_uncommitted_changes() {
         "x = 2  # c\n"
     );
 }
+
+#[test]
+fn clean_handles_rust_and_yaml_and_lists_code_level_suppressions() {
+    let root = repo(
+        "langs",
+        &[
+            ("lib.rs", "// 왜\n/// 문서\nfn f() -> i32 {\n    1 // 하나\n}\n#[allow(dead_code)]\nfn g() {}\n"),
+            ("deploy.yaml", "# 배포\nkind: Pod # 파드\nmetadata:\n  annotations:\n    ignore-check.kube-linter.io/host-ipc: \"MPS\"\n"),
+        ],
+    );
+    let out = kiln(&root, &["clean"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert_eq!(
+        fs::read_to_string(root.join("lib.rs")).unwrap(),
+        "/// 문서\nfn f() -> i32 {\n    1\n}\n#[allow(dead_code)]\nfn g() {}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("deploy.yaml")).unwrap(),
+        "kind: Pod\nmetadata:\n  annotations:\n    ignore-check.kube-linter.io/host-ipc: \"MPS\"\n"
+    );
+    assert!(stdout.contains("lib.rs:6: #[allow(dead_code)]"), "{stdout}");
+    assert!(stdout.contains("deploy.yaml:5:"), "{stdout}");
+    assert!(kiln(&root, &["clean", "--verify"]).status.success());
+}
