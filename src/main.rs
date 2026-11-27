@@ -33,7 +33,7 @@ const USAGE: &str = "사용:
   kiln hook start|track|stop Claude Code 훅
   kiln status                이 위치에서 어떤 검사가 도는지 보기
   kiln stats                 훅 기록 요약
-  kiln adopt strip [경로...]  기존 주석과 검사 끄기 표시를 전부 지움 (코드가 같은지 AST로 확인)
+  kiln adopt clean [경로...]  기존 주석과 검사 끄기 표시를 전부 지움 (코드가 같은지 AST로 확인)
   kiln adopt verify [--base <ref>]  <ref> 이후 주석 말고 코드가 바뀐 파이썬 파일이 없는지 확인";
 
 struct Failure {

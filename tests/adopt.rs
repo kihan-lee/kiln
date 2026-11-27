@@ -39,15 +39,15 @@ fn kiln(root: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn strip_removes_comments_and_module_docstring_and_verify_accepts_it() {
+fn clean_removes_comments_and_module_docstring_and_verify_accepts_it() {
     let root = repo(
-        "strip",
+        "clean",
         &[
             ("a.py", "\"\"\"모듈 설명\"\"\"\n\n# 왜\nimport os  # noqa: F401\n\n\ndef f():\n    \"\"\"함수 설명\"\"\"\n    return 1  # 하나\n"),
             ("cli.py", "\"\"\"사용법\"\"\"\nimport argparse\n\nargparse.ArgumentParser(description=__doc__)  # 설명\n"),
         ],
     );
-    let out = kiln(&root, &["adopt", "strip"]);
+    let out = kiln(&root, &["adopt", "clean"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     assert_eq!(
@@ -68,10 +68,10 @@ fn strip_removes_comments_and_module_docstring_and_verify_accepts_it() {
 }
 
 #[test]
-fn strip_refuses_files_with_uncommitted_changes() {
+fn clean_refuses_files_with_uncommitted_changes() {
     let root = repo("dirty", &[("a.py", "x = 1  # c\n")]);
     fs::write(root.join("a.py"), "x = 2  # c\n").unwrap();
-    let out = kiln(&root, &["adopt", "strip"]);
+    let out = kiln(&root, &["adopt", "clean"]);
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(
         fs::read_to_string(root.join("a.py")).unwrap(),

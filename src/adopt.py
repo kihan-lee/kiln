@@ -50,7 +50,7 @@ def failure(error):
     return {"ok": False, "error": f"구문 분석 실패: {reason}"}
 
 
-def strip(item):
+def clean(item):
     try:
         original = shape(item["before"])
         text, docstring_result = drop_docstring(item["after"])
@@ -71,7 +71,7 @@ def same(item):
 
 def main():
     request = json.load(sys.stdin)
-    run = strip if request["mode"] == "strip" else same
+    run = clean if request["mode"] == "clean" else same
     json.dump([run(item) for item in request["items"]], sys.stdout)
 
 

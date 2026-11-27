@@ -9,15 +9,15 @@ use std::process::{Command, ExitCode, Stdio};
 const HELPER: &str = include_str!("adopt.py");
 
 #[derive(Default, PartialEq, Debug)]
-pub struct Stripped {
+pub struct Cleaned {
     pub text: String,
     pub comments: usize,
     pub suppressions: usize,
 }
 
-pub fn strip_comments(src: &str) -> Stripped {
+pub fn clean_comments(src: &str) -> Cleaned {
     let mut lines: Vec<Option<String>> = src.split('\n').map(|l| Some(l.to_string())).collect();
-    let mut out = Stripped::default();
+    let mut out = Cleaned::default();
     for (n, text) in python_marks(src) {
         if !text.starts_with('#') {
             continue;
@@ -108,7 +108,7 @@ fn setup() -> Result<(PathBuf, PathBuf), ExitCode> {
     Ok((root, python))
 }
 
-fn strip(paths: &[String]) -> ExitCode {
+fn clean(paths: &[String]) -> ExitCode {
     let (root, python) = match setup() {
         Ok(found) => found,
         Err(code) => return code,
@@ -138,11 +138,11 @@ fn strip(paths: &[String]) -> ExitCode {
         let Ok(before) = fs::read_to_string(&file) else {
             continue;
         };
-        let stripped = strip_comments(&before);
-        items.push(json!({ "before": before, "after": stripped.text }));
-        work.push((file, before, stripped));
+        let cleaned = clean_comments(&before);
+        items.push(json!({ "before": before, "after": cleaned.text }));
+        work.push((file, before, cleaned));
     }
-    let answers = match ask(&python, "strip", &items) {
+    let answers = match ask(&python, "clean", &items) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("검증 실패: {e}");
@@ -152,7 +152,7 @@ fn strip(paths: &[String]) -> ExitCode {
     let (mut changed, mut comments, mut suppressions, mut docstrings) = (0, 0, 0, 0);
     let mut skipped = Vec::new();
     let mut kept = Vec::new();
-    for ((file, before, stripped), answer) in work.iter().zip(&answers) {
+    for ((file, before, cleaned), answer) in work.iter().zip(&answers) {
         let name = relative(&root, file);
         if answer["ok"] != true {
             skipped.push(format!(
@@ -174,19 +174,19 @@ fn strip(paths: &[String]) -> ExitCode {
             continue;
         }
         let mut parts = Vec::new();
-        if stripped.comments > 0 {
-            parts.push(format!("주석 {}", stripped.comments));
+        if cleaned.comments > 0 {
+            parts.push(format!("주석 {}", cleaned.comments));
         }
-        if stripped.suppressions > 0 {
-            parts.push(format!("검사 끄기 표시 {}", stripped.suppressions));
+        if cleaned.suppressions > 0 {
+            parts.push(format!("검사 끄기 표시 {}", cleaned.suppressions));
         }
         if docstring {
             parts.push("파일 맨 위 설명문".to_string());
         }
         println!("{name}: {}", parts.join(", "));
         changed += 1;
-        comments += stripped.comments;
-        suppressions += stripped.suppressions;
+        comments += cleaned.comments;
+        suppressions += cleaned.suppressions;
         docstrings += usize::from(docstring);
     }
     println!(
@@ -280,10 +280,10 @@ fn verify(args: &[String]) -> ExitCode {
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
-        Some("strip") => strip(&args[1..]),
+        Some("clean") => clean(&args[1..]),
         Some("verify") => verify(&args[1..]),
         _ => {
-            eprintln!("사용:\n  kiln adopt strip [경로...]\n  kiln adopt verify [--base <ref>]");
+            eprintln!("사용:\n  kiln adopt clean [경로...]\n  kiln adopt verify [--base <ref>]");
             ExitCode::from(2)
         }
     }
@@ -291,12 +291,12 @@ pub fn run(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_comments;
+    use super::clean_comments;
 
     #[test]
     fn removes_comments_and_suppressions_but_keeps_directives() {
         let src = "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n# why\nimport os  # noqa: F401\nx = \"# not\"  # tail\ny = 1  # type: int\n\n\ndef f():\n    # inside\n    return 1  # pragma: no cover\n";
-        let out = strip_comments(src);
+        let out = clean_comments(src);
         assert_eq!(
             out.text,
             "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\nimport os\nx = \"# not\"\ny = 1  # type: int\n\n\ndef f():\n    return 1  # pragma: no cover\n"
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn keeps_crlf_line_endings() {
-        let out = strip_comments("x = 1  # c\r\n# d\r\ny = 2\r\n");
+        let out = clean_comments("x = 1  # c\r\n# d\r\ny = 2\r\n");
         assert_eq!(out.text, "x = 1\r\ny = 2\r\n");
     }
 }
